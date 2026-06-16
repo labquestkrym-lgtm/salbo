@@ -1,5 +1,6 @@
 """Order management and execution."""
 
+from app.execution.hedge_engine import HedgeBandConfig, HedgeDecision, HedgeEngine
 from app.execution.oms import (
     InMemoryOrderStore,
     OrderManager,
@@ -13,6 +14,9 @@ from app.execution.reconcile import (
 )
 
 __all__ = [
+    "HedgeBandConfig",
+    "HedgeDecision",
+    "HedgeEngine",
     "InMemoryOrderStore",
     "OrderManager",
     "OrderStore",

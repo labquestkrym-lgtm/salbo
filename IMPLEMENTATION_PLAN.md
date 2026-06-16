@@ -56,9 +56,17 @@ Each stage ends with: format (ruff format) → lint (ruff) → types (mypy) → 
   size, slippage, commission; driven by `process_pending`.
 - 23 new tests. — R10, R20, R21, R23.
 
-## Stage 7 — Strategy
-- `BaseStrategy`, ATM selection, Long Straddle open (two legs), initial hedge,
-  delta band, gamma scalping, close rules, vol forecast model. — R17, R18, R19.
+## Stage 7 — Strategy ✅
+- `vol_forecast`: HV/EWMA/Parkinson/Garman-Klass/RV estimators + ATR; blended
+  `RealizedVolForecastModel`; buy-vol signal E[RV] > IV + cost/uncertainty.
+- `select_atm_strike`: liquidity/spread/proximity/volume/OI filters.
+- `HedgeEngine`: adaptive delta band, hedge-to-zero/inner-band, cost gate,
+  cooldown + per-minute rate limit.
+- `DeltaHedgedLongStraddleStrategy`: entry (vol signal + liquid ATM), exit
+  (time/profit/loss), marketable-limit leg builder.
+- End-to-end test: ATM -> open straddle -> Greeks -> hedge -> delta reduced,
+  commissions charged (acceptance criteria 5-11).
+- 24 new tests. — R17, R18, R19.
 
 ## Stage 8 — Backtest & paper
 - Event-driven backtester reusing strategy; commissions/slippage/latency/partials;
