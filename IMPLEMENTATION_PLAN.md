@@ -68,9 +68,15 @@ Each stage ends with: format (ruff format) → lint (ruff) → types (mypy) → 
   commissions charged (acceptance criteria 5-11).
 - 24 new tests. — R17, R18, R19.
 
-## Stage 8 — Backtest & paper
-- Event-driven backtester reusing strategy; commissions/slippage/latency/partials;
-  metrics, walk-forward, P&L attribution report. — R24.
+## Stage 8 — Backtest & paper ✅
+- `backtest/metrics.py`: total/annualized return, Sharpe, Sortino, max drawdown,
+  Calmar, win rate, profit factor (degenerate-input safe).
+- `backtest/walk_forward.py`: rolling train/validation/out-of-sample windows.
+- `backtest/engine.py`: event-driven run over the mock stream reusing the live
+  strategy/hedge/OMS code; bid/ask fills, commissions, slippage, mark-to-market;
+  emits `BacktestReport` (incl. hedge count, delta deviation).
+- 15 new tests incl. end-to-end run (acceptance criterion 16).
+- Paper mode reuses the PaperBroker fill model from Stage 6. — R24.
 
 ## Stage 9 — Real broker (no live by default)
 - `RealBrokerAdapter` for a chosen broker; sandbox; reconciliation; safe-start

@@ -56,12 +56,11 @@ make check    # format + lint (ruff) + types (mypy) + tests
 ```
 
 ## Running a backtest
-```bash
-# (Stage 8) event-driven backtester reusing the live strategy code.
-# python -m backtest --config configs/example.yaml
-```
-Backtesting accounts for bid/ask, commissions, slippage, latency, partial fills,
-expiries and gaps. It never fills at the last price. See [BACKTESTING.md](BACKTESTING.md).
+The event-driven backtester reuses the live strategy/hedge/OMS code (ADR-0002).
+See [BACKTESTING.md](BACKTESTING.md) for a runnable `BacktestEngine` example. It
+accounts for bid/ask, commissions, slippage, partial fills, expiries and gaps,
+and never fills at the last price. A CLI entry point (`python -m backtest`) is a
+thin wrapper planned for Stage 9 wiring.
 
 ## Running paper mode
 ```bash
@@ -105,8 +104,8 @@ Available now:
 [RISK_MANAGEMENT](RISK_MANAGEMENT.md) ·
 [STRATEGY](STRATEGY.md) ·
 [BROKER_ADAPTER](BROKER_ADAPTER.md) ·
+[BACKTESTING](BACKTESTING.md) ·
 ADRs in `docs/adr/`
 
 Written alongside their stages (see [IMPLEMENTATION_PLAN](IMPLEMENTATION_PLAN.md)):
-`BACKTESTING.md` (Stage 8), `DEPLOYMENT.md` / `OPERATIONS.md` /
-`INCIDENT_RESPONSE.md` (Stage 9).
+`DEPLOYMENT.md` / `OPERATIONS.md` / `INCIDENT_RESPONSE.md` (Stage 9).
