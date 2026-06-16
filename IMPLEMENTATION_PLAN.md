@@ -36,9 +36,15 @@ Each stage ends with: format (ruff format) → lint (ruff) → types (mypy) → 
   detection, crossed-market flag) + JSONL recorder/replayer.
 - 18 new tests. — R7 (partial), R8 (mock), R9, R12, R13.
 
-## Stage 5 — Portfolio & risk
-- Portfolio Greeks, hedge sizing (rounding modes), stress P&L, P&L attribution,
-  Risk Manager limits, kill switches. — R15, R16, R22, R29.
+## Stage 5 — Portfolio & risk ✅
+- `PortfolioGreeksEngine`: net/cash/futures-equivalent delta, gamma, $-gamma,
+  theta/day, vega/pt, vanna, volga, gross exposure (per-instrument multipliers).
+- `compute_hedge_contracts`: dimensionally-checked sizing with 5 rounding modes.
+- `attribute_pnl`: delta/gamma/theta/vega + hedge/basis/fees/spread/slippage +
+  residual (explained + residual == total).
+- `RiskManager` + latching `KillSwitch`: hard limits, critical-breach trip,
+  HOLD-by-default policy, external-event triggers, order-size veto.
+- 19 new tests. — R7, R15, R16, R22, R29.
 
 ## Stage 6 — OMS & execution
 - Order state machine, idempotency, partial fills, reconciliation, restart
