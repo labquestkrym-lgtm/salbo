@@ -85,10 +85,20 @@ Each stage ends with: format (ruff format) → lint (ruff) → types (mypy) → 
 - Operational docs: DEPLOYMENT.md, OPERATIONS.md, INCIDENT_RESPONSE.md.
 - 6 new guard tests. Live remains disabled by default. — R11.
 
+## Stage R25 — Persistence ✅
+- SQLAlchemy 2.0 async ORM (instruments, orders, order_events, fills, positions,
+  portfolio_snapshots, audit_log, config_versions); `DecimalText` stores money
+  exactly on any backend (ADR-0001).
+- `Database` (async engine/session), `OrderRepository`, `PositionRepository`.
+- Alembic (`alembic.ini`, `migrations/env.py`, initial migration `0001`).
+- Tests: Decimal-exact round-trips + Alembic `upgrade head` applies (SQLite;
+  prod targets PostgreSQL/asyncpg — Docker not available in this environment).
+
 ## Remaining (post-v1 wiring)
-- R25 persistence (SQLAlchemy 2.0 async + Alembic migrations); R26 trading API
-  endpoints + WebSocket + auth/audit; R27 notifications; R14 vol surface; R30
-  metrics endpoint. Orchestration worker loop ties the live runner together.
+- R26 trading API endpoints + WebSocket + auth/audit; R27 notifications; R14 vol
+  surface; R30 Prometheus endpoint. A DB-backed `OrderStore` (async) and the
+  orchestration worker loop tie the live runner together. `docker compose up` +
+  `alembic upgrade head` need a Docker host (unavailable here).
 
 ## Definition of done (v1)
 The 17 acceptance criteria in the brief, section 11. Tracked in
