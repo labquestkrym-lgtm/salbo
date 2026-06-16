@@ -1,0 +1,63 @@
+# Example strategy/risk/execution parameters.
+#
+# Risk limits are intentionally left at 0 (== "unset"). The application REFUSES
+# to start live trading until the mandatory limits are set to real, analyzed
+# values. Do NOT fill these with arbitrary "safe" numbers — they require a
+# deliberate decision per account and market.
+
+app:
+  environment: development
+  mode: backtest
+
+trading:
+  live_trading_enabled: false
+  symbol: PLACEHOLDER
+
+strategy:
+  symbol: PLACEHOLDER
+  option_structure: straddle
+  contracts: 1
+  min_days_to_expiry: 10
+  max_days_to_expiry: 45
+  target_delta: 0
+  hedge_mode: adaptive_delta_band
+  hedge_to_zero: false
+  minimum_edge: 0
+  maximum_option_spread_percent: 0
+  maximum_futures_spread_ticks: 0
+  minimum_option_volume: 0
+  minimum_open_interest: 0
+  max_strike_distance_from_atm: 0
+  permitted_expirations: []
+  blackout_dates: []
+  permitted_open_hours_utc: []
+
+risk:
+  maximum_daily_loss: 0
+  maximum_drawdown: 0
+  maximum_margin_utilization: 0      # fraction 0..1
+  maximum_cash_delta: 0
+  maximum_net_delta: 0
+  maximum_gamma: 0
+  maximum_vega: 0
+  maximum_theta: 0
+  maximum_futures_position: 0
+  maximum_option_contracts: 0
+  maximum_single_order_size: 0
+  maximum_turnover: 0
+  maximum_orders_per_minute: 0
+  maximum_spread: 0
+  maximum_slippage_ticks: 0
+  minimum_cash_reserve: 0
+  stale_market_data_seconds: 0
+  maximum_position_mismatch: 0
+  kill_switch_policy: hold
+
+execution:
+  option_order_type: limit
+  futures_order_type: marketable_limit
+  maximum_slippage_ticks: 0
+  order_timeout_seconds: 0
+  maximum_orders_per_minute: 0
+  leg_execution: sequential
+  max_seconds_between_legs: 0
