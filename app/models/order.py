@@ -57,6 +57,18 @@ class Fill(BaseModel):
     broker_fill_id: str | None = None
 
 
+class OrderEvent(BaseModel):
+    """An audited order state transition (persisted for recovery/audit)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    client_order_id: str
+    from_state: OrderState
+    to_state: OrderState
+    timestamp: datetime
+    detail: str = ""
+
+
 class Order(BaseModel):
     """Live view of an order including fill progress."""
 

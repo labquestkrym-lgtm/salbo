@@ -46,9 +46,15 @@ Each stage ends with: format (ruff format) → lint (ruff) → types (mypy) → 
   HOLD-by-default policy, external-event triggers, order-size veto.
 - 19 new tests. — R7, R15, R16, R22, R29.
 
-## Stage 6 — OMS & execution
-- Order state machine, idempotency, partial fills, reconciliation, restart
-  recovery, `PaperBrokerAdapter`. — R10, R20, R21, R23.
+## Stage 6 — OMS & execution ✅
+- `OrderManager` state machine: validated transitions, idempotent submit,
+  persisted `OrderEvent`s, no assumed fills, broker resync, `recover()` after
+  restart, overfill guard; `OrderStore` protocol + in-memory impl.
+- `reconcile_positions` + `ReconciliationService` (trips POSITION_DESYNC).
+- `StraddleExecutor`: both-legs-or-rollback, sequential/parallel, one-leg unwind.
+- `PaperBrokerAdapter`: bid/ask fills, latency ticks, partial fills by book
+  size, slippage, commission; driven by `process_pending`.
+- 23 new tests. — R10, R20, R21, R23.
 
 ## Stage 7 — Strategy
 - `BaseStrategy`, ATM selection, Long Straddle open (two legs), initial hedge,
