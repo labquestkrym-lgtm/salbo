@@ -78,9 +78,17 @@ Each stage ends with: format (ruff format) → lint (ruff) → types (mypy) → 
 - 15 new tests incl. end-to-end run (acceptance criterion 16).
 - Paper mode reuses the PaperBroker fill model from Stage 6. — R24.
 
-## Stage 9 — Real broker (no live by default)
-- `RealBrokerAdapter` for a chosen broker; sandbox; reconciliation; safe-start
-  runbook. Live stays disabled. — R11.
+## Stage 9 — Real broker (no live by default) ✅
+- `RealBrokerAdapter` template: every method raises NotImplementedError; two
+  guards — construction (refuse non-sandbox in dev/test) and trade (refuse
+  order methods on a non-sandbox endpoint unless all live gates pass).
+- Operational docs: DEPLOYMENT.md, OPERATIONS.md, INCIDENT_RESPONSE.md.
+- 6 new guard tests. Live remains disabled by default. — R11.
+
+## Remaining (post-v1 wiring)
+- R25 persistence (SQLAlchemy 2.0 async + Alembic migrations); R26 trading API
+  endpoints + WebSocket + auth/audit; R27 notifications; R14 vol surface; R30
+  metrics endpoint. Orchestration worker loop ties the live runner together.
 
 ## Definition of done (v1)
 The 17 acceptance criteria in the brief, section 11. Tracked in

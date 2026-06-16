@@ -3,6 +3,7 @@
 from app.brokers.base import BaseBrokerAdapter, BrokerCapabilities
 from app.brokers.mock import MockBrokerAdapter
 from app.brokers.paper import PaperBrokerAdapter, PaperFillConfig
+from app.brokers.real_template import RealBrokerAdapter
 
 __all__ = [
     "BaseBrokerAdapter",
@@ -10,4 +11,5 @@ __all__ = [
     "MockBrokerAdapter",
     "PaperBrokerAdapter",
     "PaperFillConfig",
+    "RealBrokerAdapter",
 ]
