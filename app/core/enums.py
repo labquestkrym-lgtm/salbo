@@ -25,6 +25,13 @@ class Environment(StrEnum):
     PRODUCTION = "production"
 
 
+class AssetClass(StrEnum):
+    EQUITY = "equity"
+    FUTURE = "future"
+    OPTION = "option"
+    INDEX = "index"
+
+
 class OptionType(StrEnum):
     CALL = "call"
     PUT = "put"

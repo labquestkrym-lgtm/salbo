@@ -60,3 +60,11 @@ class ReconciliationError(TradingBotError):
 
 class BrokerError(TradingBotError):
     """Broker connectivity or API error."""
+
+
+class InstrumentResolutionError(TradingBotError):
+    """Could not resolve or validate an instrument mapping."""
+
+
+class MarketDataError(TradingBotError):
+    """Market-data quality problem (stale, gapped, crossed, missing)."""

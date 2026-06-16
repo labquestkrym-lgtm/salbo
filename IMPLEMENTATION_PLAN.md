@@ -26,9 +26,15 @@ Each stage ends with: format (ruff format) → lint (ruff) → types (mypy) → 
 - Unit + property-based tests (put-call parity, finite-difference Greeks).
 - **Risks closed:** R3, R4, R5, R6, R7.
 
-## Stage 4 — Market data & instruments
-- `app/instruments` resolver + validation. `app/market_data` book/staleness/gap +
-  record/replay. `MockBrokerAdapter`. — R8, R9, R12, R13.
+## Stage 4 — Market data & instruments ✅
+- Domain models (`app/models`: Instrument/ContractSpec/Quote/Position/Order/Fill).
+- `BaseBrokerAdapter` (universal interface) + `MockBrokerAdapter` (deterministic
+  GBM underlying, carry-priced future, flat-IV option chain, bid/ask fills).
+- `InstrumentResolver` (underlying↔future↔option-series mapping + validation;
+  preserves differing option/future multipliers).
+- `MarketDataService` (book state, staleness, gap/duplicate/out-of-order
+  detection, crossed-market flag) + JSONL recorder/replayer.
+- 18 new tests. — R7 (partial), R8 (mock), R9, R12, R13.
 
 ## Stage 5 — Portfolio & risk
 - Portfolio Greeks, hedge sizing (rounding modes), stress P&L, P&L attribution,
