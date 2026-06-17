@@ -7,10 +7,12 @@ authenticated, audited, and idempotent (via an ``Idempotency-Key`` header), and
 enforces the live-trading gate and confirmation code (ADR-0003).
 """
 
+import asyncio
 from collections.abc import Awaitable
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from app import __version__
@@ -20,6 +22,7 @@ from app.config.settings import AppSettings, load_settings
 from app.core.clock import Clock, SystemClock
 from app.core.exceptions import LiveTradingNotAuthorizedError, ReconciliationError, TradingBotError
 from app.core.logging import configure_logging, get_logger
+from app.observability.metrics import Metrics
 
 logger = get_logger(__name__)
 
@@ -39,10 +42,13 @@ def create_app(
     control: ControlPlane | None = None,
     audit: AuditSink | None = None,
     clock: Clock | None = None,
+    metrics: Metrics | None = None,
+    ws_interval_seconds: float = 1.0,
 ) -> FastAPI:
     settings = settings or load_settings()
     clock = clock or SystemClock()
     audit = audit or InMemoryAuditSink(clock=clock)
+    metrics = metrics or Metrics()
     configure_logging()
     app = FastAPI(title="trading-bot", version=__version__)
     idempotency: dict[str, dict[str, Any]] = {}
@@ -64,13 +70,18 @@ def create_app(
     CtrlDep = Annotated[ControlPlane, Depends(require_control)]
 
     async def run_command(
-        *, actor: str, action: str, detail: str, idem_key: str | None,
+        *,
+        actor: str,
+        action: str,
+        detail: str,
+        idem_key: str | None,
         coro: Awaitable[dict[str, Any]],
     ) -> dict[str, Any]:
         if idem_key and idem_key in idempotency:
             return idempotency[idem_key]
         result = await coro
         audit.record(actor=actor, action=action, detail=detail)
+        metrics.record_command(action)
         if idem_key:
             idempotency[idem_key] = result
         return result
@@ -87,6 +98,11 @@ def create_app(
             "mode": settings.app_mode.value,
             "environment": settings.app_environment.value,
         }
+
+    @app.get("/metrics")
+    async def prometheus_metrics() -> Response:
+        # Unauthenticated for scraping; metrics carry no secrets (R30).
+        return Response(content=metrics.render(), media_type=metrics.content_type)
 
     # --- authenticated reads ------------------------------------------------
     @app.get("/status")
@@ -202,13 +218,16 @@ def create_app(
     ) -> dict[str, Any]:
         if not body.confirm:
             raise HTTPException(status_code=400, detail="kill-switch requires confirm=true")
-        return await run_command(
+        result = await run_command(
             actor=actor,
             action="kill_switch",
             detail=body.reason or "manual",
             idem_key=idempotency_key,
             coro=ctrl.trip_kill_switch(reason=body.reason or "manual"),
         )
+        metrics.kill_switch_trips_total.inc()
+        metrics.set_kill_switch(True)
+        return result
 
     @app.post("/reconcile")
     async def reconcile(
@@ -226,6 +245,32 @@ def create_app(
             )
         except ReconciliationError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # --- WebSocket stream (quotes/positions/greeks/pnl/risk) ---------------
+    @app.websocket("/ws/stream")
+    async def ws_stream(websocket: WebSocket) -> None:
+        token = settings.api_auth_token.get_secret_value()
+        if not token or websocket.headers.get("authorization") != f"Bearer {token}":
+            await websocket.close(code=1008)  # policy violation (unauthorized)
+            return
+        if control is None:
+            await websocket.close(code=1011)  # internal error (not wired)
+            return
+        await websocket.accept()
+        try:
+            while True:
+                await websocket.send_json(
+                    {
+                        "status": await control.status(),
+                        "positions": await control.positions(),
+                        "risk": await control.risk(),
+                        "greeks": await control.greeks(),
+                        "pnl": await control.pnl(),
+                    }
+                )
+                await asyncio.sleep(ws_interval_seconds)
+        except WebSocketDisconnect:
+            return
 
     @app.exception_handler(TradingBotError)
     async def _domain_error(_: Any, exc: TradingBotError) -> Any:

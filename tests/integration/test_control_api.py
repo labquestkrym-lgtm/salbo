@@ -5,7 +5,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from app.api import InMemoryAuditSink, InMemoryControlPlane, create_app
 from app.brokers.mock import MockBrokerAdapter, MockMarketConfig
@@ -13,6 +15,7 @@ from app.config.settings import AppSettings, ParametersFile, RiskConfig
 from app.core.clock import SimulatedClock
 from app.core.enums import AppMode, Environment, OrderType, Side
 from app.models import OrderRequest
+from app.observability import Metrics
 from app.risk import KillSwitch, RiskManager
 
 _NOW = datetime(2026, 1, 5, 15, 0, tzinfo=UTC)
@@ -136,3 +139,33 @@ def test_live_start_requires_confirmation_code() -> None:
     ok = client.post("/strategy/start", headers=_AUTH, json={"confirmation_code": "the-code"})
     assert ok.status_code == 200
     assert ok.json()["run_state"] == "running"
+
+
+def test_metrics_endpoint_exposes_command_counter() -> None:
+    settings = AppSettings(api_auth_token=_TOKEN)  # type: ignore[arg-type]
+    clock = SimulatedClock(_NOW)
+    broker = MockBrokerAdapter(clock, MockMarketConfig())
+    risk = RiskManager(RiskConfig(), KillSwitch(clock))
+    control = InMemoryControlPlane(settings, broker, risk)
+    metrics = Metrics()
+    client = TestClient(create_app(settings, control=control, metrics=metrics, clock=clock))
+    client.post("/strategy/stop", headers=_AUTH)
+    body = client.get("/metrics").text  # public scrape endpoint
+    assert "tradingbot_commands_total" in body
+    assert 'action="strategy.stop"' in body
+
+
+def test_ws_stream_pushes_snapshot() -> None:
+    client, _, _ = _build()
+    with client.websocket_connect("/ws/stream", headers=_AUTH) as ws:
+        snapshot = ws.receive_json()
+    assert "status" in snapshot
+    assert "risk" in snapshot
+    assert "positions" in snapshot
+
+
+def test_ws_stream_rejects_without_auth() -> None:
+    client, _, _ = _build()
+    with pytest.raises(WebSocketDisconnect):  # noqa: SIM117
+        with client.websocket_connect("/ws/stream") as ws:
+            ws.receive_json()

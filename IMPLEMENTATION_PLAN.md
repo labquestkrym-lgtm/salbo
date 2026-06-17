@@ -109,7 +109,15 @@ Each stage ends with: format (ruff format) → lint (ruff) → types (mypy) → 
   (tests), `TelegramChannel` (token only in URL), `EmailChannel` (SMTP, off-loop).
   8 tests. Live network channels not exercised (no creds) — documented.
 
-## Stage R26 — Control API ✅ (WebSocket deferred)
+## Stage R30 — Prometheus metrics + WebSocket ✅
+- `app/observability/metrics.py`: `Metrics` with a private `CollectorRegistry`
+  (command counter, fills/hedges/kill-switch counters, delta/gamma/cash-delta and
+  kill-switch gauges); public `GET /metrics` scrape endpoint.
+- `GET /ws/stream`: bearer-authenticated WebSocket pushing periodic
+  status/positions/risk/greeks/pnl snapshots; rejects unauthenticated connects.
+- 3 tests. Completes the R26 WebSocket slice and R30 metrics.
+
+## Stage R26 — Control API ✅
 - `app/api`: bearer-auth FastAPI control plane. Public probes (`/health`,
   `/ready`); authenticated reads (`/status`, `/positions`, `/orders`, `/fills`,
   `/portfolio/greeks`, `/portfolio/pnl`, `/risk`, `/strategy`, `/config`);
@@ -121,9 +129,11 @@ Each stage ends with: format (ruff format) → lint (ruff) → types (mypy) → 
 - 9 tests. WebSocket streaming endpoints are the remaining R26 slice.
 
 ## Remaining (post-v1 wiring)
-- R26 WebSocket streams; R30 Prometheus endpoint. A DB-backed async `OrderStore`
-  and the orchestration worker loop tie the live runner together.
-  `docker compose up` + `alembic upgrade head` need a Docker host (unavailable here).
+- The orchestration worker loop that ties the live runner together (drives
+  market data -> strategy -> hedge -> OMS on a schedule and publishes
+  greeks/pnl snapshots to the control plane + metrics), and a DB-backed async
+  `OrderStore`. `docker compose up` + `alembic upgrade head` need a Docker host
+  (unavailable here). All 30 traceability requirements are now ✅.
 
 ## Definition of done (v1)
 The 17 acceptance criteria in the brief, section 11. Tracked in
