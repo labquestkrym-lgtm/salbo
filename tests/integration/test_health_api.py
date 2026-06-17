@@ -26,9 +26,7 @@ def test_ready_reports_mode() -> None:
     assert body["mode"] == "backtest"
 
 
-def test_status_blocks_live_by_default() -> None:
+def test_protected_endpoint_requires_auth() -> None:
+    # /status needs a bearer token; default settings have no token configured.
     resp = _client().get("/status")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["live_trading_allowed"] is False
-    assert body["live_trading_blockers"]  # non-empty list of reasons
+    assert resp.status_code == 503  # auth not configured

@@ -109,11 +109,21 @@ Each stage ends with: format (ruff format) → lint (ruff) → types (mypy) → 
   (tests), `TelegramChannel` (token only in URL), `EmailChannel` (SMTP, off-loop).
   8 tests. Live network channels not exercised (no creds) — documented.
 
+## Stage R26 — Control API ✅ (WebSocket deferred)
+- `app/api`: bearer-auth FastAPI control plane. Public probes (`/health`,
+  `/ready`); authenticated reads (`/status`, `/positions`, `/orders`, `/fills`,
+  `/portfolio/greeks`, `/portfolio/pnl`, `/risk`, `/strategy`, `/config`);
+  audited + idempotent commands (`/strategy/start|stop|pause`, `/hedge`,
+  `/kill-switch`, `/reconcile`).
+- `ControlPlane` protocol + `InMemoryControlPlane` (broker + risk + run-state);
+  `AuditSink` + `InMemoryAuditSink`; `Idempotency-Key` dedup; kill-switch
+  confirmation; live start enforces the gate + confirmation code (ADR-0003).
+- 9 tests. WebSocket streaming endpoints are the remaining R26 slice.
+
 ## Remaining (post-v1 wiring)
-- R26 trading API endpoints + WebSocket + auth/audit; R30 Prometheus endpoint.
-  A DB-backed `OrderStore` (async) and the orchestration worker loop tie the live
-  runner together. `docker compose up` + `alembic upgrade head` need a Docker
-  host (unavailable here).
+- R26 WebSocket streams; R30 Prometheus endpoint. A DB-backed async `OrderStore`
+  and the orchestration worker loop tie the live runner together.
+  `docker compose up` + `alembic upgrade head` need a Docker host (unavailable here).
 
 ## Definition of done (v1)
 The 17 acceptance criteria in the brief, section 11. Tracked in
