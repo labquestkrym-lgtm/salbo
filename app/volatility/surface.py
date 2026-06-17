@@ -202,13 +202,19 @@ def build_surface(
         if max_spread_fraction > 0 and (sf is None or sf > max_spread_fraction):
             reliable = False
 
-        def _iv(px: Decimal | None, _ot: OptionType = option_type, _k: float = strike,
-                _t: float = tau) -> float | None:
+        def _iv(
+            px: Decimal | None, _ot: OptionType = option_type, _k: float = strike, _t: float = tau
+        ) -> float | None:
             if px is None or px <= 0:
                 return None
             return _safe_iv(
-                price=float(px), underlying=spot, strike=_k, t=_t, rate=rate,
-                option_type=_ot, dividend_yield=dividend_yield,
+                price=float(px),
+                underlying=spot,
+                strike=_k,
+                t=_t,
+                rate=rate,
+                option_type=_ot,
+                dividend_yield=dividend_yield,
             )
 
         iv_bid = _iv(quote.bid)

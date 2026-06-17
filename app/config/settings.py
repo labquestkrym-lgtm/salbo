@@ -180,6 +180,12 @@ class AppSettings(BaseSettings):
     # Notifications
     telegram_bot_token: SecretStr | None = None
     telegram_chat_id: str | None = None
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: SecretStr | None = None
+    smtp_password: SecretStr | None = None
+    smtp_from: str | None = None
+    smtp_to: str | None = None
 
     # Loaded parameters (populated by ``load_settings``)
     params: ParametersFile = Field(default_factory=ParametersFile)

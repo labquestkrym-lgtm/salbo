@@ -31,6 +31,16 @@ _TOKEN_RE = re.compile(r"\b[A-Za-z0-9_\-]{24,}\b")
 _REDACTED = "***REDACTED***"
 
 
+def redact_secrets(text: str) -> str:
+    """Mask long opaque token-like substrings in free text. Reusable by any
+    outbound channel (logs, notifications) so secrets never leave the process."""
+    return _TOKEN_RE.sub(_REDACTED, text)
+
+
+def is_sensitive_key(key: str) -> bool:
+    return key.lower() in _SENSITIVE_KEYS
+
+
 def _redact(_logger: object, _method: str, event_dict: dict[str, Any]) -> dict[str, Any]:
     for key in list(event_dict.keys()):
         if key.lower() in _SENSITIVE_KEYS:

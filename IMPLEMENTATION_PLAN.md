@@ -101,11 +101,19 @@ Each stage ends with: format (ruff format) → lint (ruff) → types (mypy) → 
   quality flags (crossed/illiquid/unsolvable -> unreliable), `SmileModel`
   protocol so SVI/SABR slot in later. 7 tests.
 
+## Stage R27 — Notifications ✅
+- `app/notifications`: `NotificationService` fan-out with mandatory secret
+  redaction (message + field values), per-channel error isolation, and typed
+  event helpers (start/stop, leg fill, hedge, limit breach, data loss, desync,
+  kill switch, daily P&L, error). Channels: `LogChannel`, `CollectingChannel`
+  (tests), `TelegramChannel` (token only in URL), `EmailChannel` (SMTP, off-loop).
+  8 tests. Live network channels not exercised (no creds) — documented.
+
 ## Remaining (post-v1 wiring)
-- R26 trading API endpoints + WebSocket + auth/audit; R27 notifications; R30
-  Prometheus endpoint. A DB-backed `OrderStore` (async) and the orchestration
-  worker loop tie the live runner together. `docker compose up` +
-  `alembic upgrade head` need a Docker host (unavailable here).
+- R26 trading API endpoints + WebSocket + auth/audit; R30 Prometheus endpoint.
+  A DB-backed `OrderStore` (async) and the orchestration worker loop tie the live
+  runner together. `docker compose up` + `alembic upgrade head` need a Docker
+  host (unavailable here).
 
 ## Definition of done (v1)
 The 17 acceptance criteria in the brief, section 11. Tracked in
