@@ -60,6 +60,10 @@ class InMemoryControlPlane:
         self._greeks_snapshot: dict[str, Any] = {"available": False}
         self._pnl_snapshot: dict[str, Any] = {"available": False}
 
+    @property
+    def run_state(self) -> StrategyRunState:
+        return self._run_state
+
     # Hooks for the orchestrator to publish latest analytics.
     def set_greeks_snapshot(self, snapshot: dict[str, Any]) -> None:
         self._greeks_snapshot = snapshot

@@ -128,12 +128,18 @@ Each stage ends with: format (ruff format) → lint (ruff) → types (mypy) → 
   confirmation; live start enforces the gate + confirmation code (ADR-0003).
 - 9 tests. WebSocket streaming endpoints are the remaining R26 slice.
 
-## Remaining (post-v1 wiring)
-- The orchestration worker loop that ties the live runner together (drives
-  market data -> strategy -> hedge -> OMS on a schedule and publishes
-  greeks/pnl snapshots to the control plane + metrics), and a DB-backed async
-  `OrderStore`. `docker compose up` + `alembic upgrade head` need a Docker host
-  (unavailable here). All 30 traceability requirements are now ✅.
+## Orchestration worker loop ✅
+- `workers/Orchestrator`: drives the broker quote stream through
+  MarketDataService -> strategy entry -> risk checks -> hedge loop -> OMS using
+  the SAME components as backtest (ADR-0002); publishes Greeks snapshots to the
+  control plane and Prometheus gauges; reads run-state (RUNNING/PAUSED/STOPPED);
+  risk vetoes entry and the kill switch halts new risk. 3 tests.
+
+## Remaining (post-v1)
+- DB-backed async `OrderStore` (wire `OrderRepository` behind the OMS store
+  protocol) and a real `docker compose up` + `alembic upgrade head` run on a
+  Docker host (unavailable in this environment). All 30 traceability
+  requirements are ✅; the live runner is wired end-to-end in-process.
 
 ## Definition of done (v1)
 The 17 acceptance criteria in the brief, section 11. Tracked in
