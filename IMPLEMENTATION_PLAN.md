@@ -94,10 +94,17 @@ Each stage ends with: format (ruff format) → lint (ruff) → types (mypy) → 
 - Tests: Decimal-exact round-trips + Alembic `upgrade head` applies (SQLite;
   prod targets PostgreSQL/asyncpg — Docker not available in this environment).
 
+## Stage R14 — Volatility surface ✅
+- `app/volatility`: per-expiry `InterpolatedSmile` (IV solved from bid/ask/mid,
+  keyed on log-moneyness, flat extrapolation, never negative), `VolatilitySurface`
+  with ATM term structure + total-variance interpolation across maturities,
+  quality flags (crossed/illiquid/unsolvable -> unreliable), `SmileModel`
+  protocol so SVI/SABR slot in later. 7 tests.
+
 ## Remaining (post-v1 wiring)
-- R26 trading API endpoints + WebSocket + auth/audit; R27 notifications; R14 vol
-  surface; R30 Prometheus endpoint. A DB-backed `OrderStore` (async) and the
-  orchestration worker loop tie the live runner together. `docker compose up` +
+- R26 trading API endpoints + WebSocket + auth/audit; R27 notifications; R30
+  Prometheus endpoint. A DB-backed `OrderStore` (async) and the orchestration
+  worker loop tie the live runner together. `docker compose up` +
   `alembic upgrade head` need a Docker host (unavailable here).
 
 ## Definition of done (v1)
