@@ -98,33 +98,36 @@ def is_valid_transition(src: OrderState, dst: OrderState) -> bool:
 
 
 class OrderStore(Protocol):
-    def save_order(self, order: Order) -> None: ...
-    def get_order(self, client_order_id: str) -> Order | None: ...
-    def list_open(self) -> list[Order]: ...
-    def save_event(self, event: OrderEvent) -> None: ...
-    def list_events(self, client_order_id: str) -> list[OrderEvent]: ...
+    """Async because the durable implementation (DB) is async; the in-memory
+    one trivially satisfies the same interface."""
+
+    async def save_order(self, order: Order) -> None: ...
+    async def get_order(self, client_order_id: str) -> Order | None: ...
+    async def list_open(self) -> list[Order]: ...
+    async def save_event(self, event: OrderEvent) -> None: ...
+    async def list_events(self, client_order_id: str) -> list[OrderEvent]: ...
 
 
 class InMemoryOrderStore:
-    """Reference store. Swappable for a DB-backed one (same protocol)."""
+    """Reference store. Swappable for the DB-backed ``SqlOrderStore``."""
 
     def __init__(self) -> None:
         self._orders: dict[str, Order] = {}
         self._events: dict[str, list[OrderEvent]] = {}
 
-    def save_order(self, order: Order) -> None:
+    async def save_order(self, order: Order) -> None:
         self._orders[order.request.client_order_id] = order
 
-    def get_order(self, client_order_id: str) -> Order | None:
+    async def get_order(self, client_order_id: str) -> Order | None:
         return self._orders.get(client_order_id)
 
-    def list_open(self) -> list[Order]:
+    async def list_open(self) -> list[Order]:
         return [o for o in self._orders.values() if not o.is_terminal]
 
-    def save_event(self, event: OrderEvent) -> None:
+    async def save_event(self, event: OrderEvent) -> None:
         self._events.setdefault(event.client_order_id, []).append(event)
 
-    def list_events(self, client_order_id: str) -> list[OrderEvent]:
+    async def list_events(self, client_order_id: str) -> list[OrderEvent]:
         return list(self._events.get(client_order_id, []))
 
 
@@ -135,7 +138,7 @@ class OrderManager:
         self._clock = clock
 
     # --- transitions --------------------------------------------------------
-    def _transition(self, order: Order, dst: OrderState, detail: str = "") -> None:
+    async def _transition(self, order: Order, dst: OrderState, detail: str = "") -> None:
         src = order.state
         if src == dst and dst is not OrderState.PARTIALLY_FILLED:
             return
@@ -145,8 +148,8 @@ class OrderManager:
             )
         order.state = dst
         order.updated_at = self._clock.now()
-        self._store.save_order(order)
-        self._store.save_event(
+        await self._store.save_order(order)
+        await self._store.save_event(
             OrderEvent(
                 client_order_id=order.request.client_order_id,
                 from_state=src,
@@ -160,15 +163,15 @@ class OrderManager:
     async def submit(self, request: OrderRequest) -> Order:
         """Idempotent submit. A repeat of a known client_order_id returns the
         existing order without re-sending to the broker."""
-        existing = self._store.get_order(request.client_order_id)
+        existing = await self._store.get_order(request.client_order_id)
         if existing is not None:
             logger.info("order_submit_idempotent_hit", client_order_id=request.client_order_id)
             return existing
 
         now = self._clock.now()
         order = Order(request=request, state=OrderState.CREATED, created_at=now, updated_at=now)
-        self._store.save_order(order)
-        self._store.save_event(
+        await self._store.save_order(order)
+        await self._store.save_event(
             OrderEvent(
                 client_order_id=request.client_order_id,
                 from_state=OrderState.CREATED,
@@ -177,8 +180,8 @@ class OrderManager:
                 detail="created",
             )
         )
-        self._transition(order, OrderState.VALIDATED, "validated")
-        self._transition(order, OrderState.SUBMITTED, "submitted to broker")
+        await self._transition(order, OrderState.VALIDATED, "validated")
+        await self._transition(order, OrderState.SUBMITTED, "submitted to broker")
 
         try:
             broker_order = await self._broker.place_order(request)
@@ -186,13 +189,13 @@ class OrderManager:
             # Broker reports a duplicate: resolve authoritatively, don't assume.
             broker_order = await self._broker.get_order(request.client_order_id)
         except BrokerError as exc:
-            self._transition(order, OrderState.UNKNOWN, f"broker error: {exc}")
+            await self._transition(order, OrderState.UNKNOWN, f"broker error: {exc}")
             return order
 
-        self._sync_from_broker(order, broker_order)
+        await self._sync_from_broker(order, broker_order)
         return order
 
-    def _sync_from_broker(self, order: Order, broker_order: Order) -> None:
+    async def _sync_from_broker(self, order: Order, broker_order: Order) -> None:
         order.broker_order_id = broker_order.broker_order_id
         if broker_order.filled_quantity > order.filled_quantity:
             order.filled_quantity = broker_order.filled_quantity
@@ -202,13 +205,13 @@ class OrderManager:
             OrderState.PARTIALLY_FILLED,
             OrderState.FILLED,
         ):
-            self._transition(order, OrderState.ACKNOWLEDGED, "broker ack (implied by fill)")
+            await self._transition(order, OrderState.ACKNOWLEDGED, "broker ack (implied by fill)")
         if broker_order.state != order.state:
-            self._transition(order, broker_order.state, "broker status")
+            await self._transition(order, broker_order.state, "broker status")
 
     # --- fills (push) -------------------------------------------------------
-    def apply_fill(self, fill: Fill) -> Order:
-        order = self._store.get_order(fill.client_order_id)
+    async def apply_fill(self, fill: Fill) -> Order:
+        order = await self._store.get_order(fill.client_order_id)
         if order is None:
             raise OrderStateError(f"fill for unknown order {fill.client_order_id}")
         new_filled = order.filled_quantity + fill.quantity
@@ -227,38 +230,38 @@ class OrderManager:
             if new_filled == order.request.quantity
             else OrderState.PARTIALLY_FILLED
         )
-        self._transition(order, dst, f"fill {fill.quantity} @ {fill.price}")
+        await self._transition(order, dst, f"fill {fill.quantity} @ {fill.price}")
         return order
 
     # --- cancel / reconcile / recover --------------------------------------
     async def cancel(self, client_order_id: str) -> Order:
-        order = self._store.get_order(client_order_id)
+        order = await self._store.get_order(client_order_id)
         if order is None:
             raise OrderStateError(f"cannot cancel unknown order {client_order_id}")
         if order.is_terminal:
             return order
-        self._transition(order, OrderState.CANCEL_PENDING, "cancel requested")
+        await self._transition(order, OrderState.CANCEL_PENDING, "cancel requested")
         broker_order = await self._broker.cancel_order(client_order_id)
-        self._sync_from_broker(order, broker_order)
+        await self._sync_from_broker(order, broker_order)
         return order
 
     async def reconcile_order(self, client_order_id: str) -> Order:
         """Authoritatively resync one order's state with the broker."""
-        order = self._store.get_order(client_order_id)
+        order = await self._store.get_order(client_order_id)
         if order is None:
             raise OrderStateError(f"unknown order {client_order_id}")
         try:
             broker_order = await self._broker.get_order(client_order_id)
         except (OrderStateError, BrokerError):
-            self._transition(order, OrderState.UNKNOWN, "broker has no record")
+            await self._transition(order, OrderState.UNKNOWN, "broker has no record")
             return order
-        self._sync_from_broker(order, broker_order)
+        await self._sync_from_broker(order, broker_order)
         return order
 
     async def recover(self) -> list[Order]:
         """On startup, resync every non-terminal order with the broker."""
         recovered: list[Order] = []
-        for order in self._store.list_open():
+        for order in await self._store.list_open():
             recovered.append(await self.reconcile_order(order.request.client_order_id))
         logger.info("oms_recovered", count=len(recovered))
         return recovered

@@ -37,7 +37,7 @@ async def test_submit_fills_and_records_transitions() -> None:
     oms = OrderManager(broker, store, SimulatedClock(_NOW))
     order = await oms.submit(_buy(broker.future_symbol, "o1"))
     assert order.state is OrderState.FILLED
-    states = [e.to_state for e in store.list_events("o1")]
+    states = [e.to_state for e in await store.list_events("o1")]
     assert OrderState.VALIDATED in states
     assert OrderState.SUBMITTED in states
     assert OrderState.ACKNOWLEDGED in states
@@ -66,10 +66,10 @@ async def test_partial_then_full_fill_via_apply_fill() -> None:
     order = await oms.submit(req)  # paper acknowledges, no immediate fill
     assert order.state is OrderState.ACKNOWLEDGED
 
-    oms.apply_fill(_fill("p1", market.future_symbol, "4"))
-    assert store.get_order("p1").state is OrderState.PARTIALLY_FILLED
-    oms.apply_fill(_fill("p1", market.future_symbol, "6"))
-    final = store.get_order("p1")
+    await oms.apply_fill(_fill("p1", market.future_symbol, "4"))
+    assert (await store.get_order("p1")).state is OrderState.PARTIALLY_FILLED
+    await oms.apply_fill(_fill("p1", market.future_symbol, "6"))
+    final = await store.get_order("p1")
     assert final.state is OrderState.FILLED
     assert final.filled_quantity == Decimal("10")
 
@@ -85,12 +85,12 @@ async def test_recover_resyncs_inflight_order_after_restart() -> None:
     # Broker fills it, but our (crashed) OMS never saw the fill.
     while (await paper.get_order("r1")).state is not OrderState.FILLED:
         await paper.process_pending()
-    assert store.get_order("r1").state is OrderState.ACKNOWLEDGED  # stale local view
+    assert (await store.get_order("r1")).state is OrderState.ACKNOWLEDGED  # stale local view
 
     oms2 = OrderManager(paper, store, clock)  # "restart"
     recovered = await oms2.recover()
     assert len(recovered) == 1
-    assert store.get_order("r1").state is OrderState.FILLED
+    assert (await store.get_order("r1")).state is OrderState.FILLED
 
 
 async def test_reconcile_unknown_order_goes_to_unknown() -> None:
@@ -100,7 +100,9 @@ async def test_reconcile_unknown_order_goes_to_unknown() -> None:
     # An order the broker has no record of (e.g. submit crashed before send).
     from app.models import Order
 
-    store.save_order(Order(request=_buy(broker.future_symbol, "ghost"), state=OrderState.SUBMITTED))
+    await store.save_order(
+        Order(request=_buy(broker.future_symbol, "ghost"), state=OrderState.SUBMITTED)
+    )
     resolved = await oms.reconcile_order("ghost")
     assert resolved.state is OrderState.UNKNOWN
 
@@ -116,7 +118,36 @@ async def test_overfill_is_rejected() -> None:
     from app.core.exceptions import OrderStateError
 
     with pytest.raises(OrderStateError):
-        oms.apply_fill(_fill("of1", market.future_symbol, "5"))
+        await oms.apply_fill(_fill("of1", market.future_symbol, "5"))
+
+
+async def test_sql_store_persists_oms_state_across_restart(tmp_path: object) -> None:
+    from pathlib import Path
+
+    from app.repositories import Database, SqlOrderStore, build_engine
+
+    db_path = Path(str(tmp_path)) / "oms.db"
+    clock = SimulatedClock(_NOW)
+    broker = _mock()
+    await broker.connect()
+
+    db1 = Database(build_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}"))
+    await db1.create_all()
+    oms1 = OrderManager(broker, SqlOrderStore(db1), clock)
+    await oms1.submit(_buy(broker.future_symbol, "persist1"))
+    await db1.dispose()
+
+    # "Restart": brand-new store/OMS over the same database file.
+    db2 = Database(build_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}"))
+    store2 = SqlOrderStore(db2)
+    reloaded = await store2.get_order("persist1")
+    assert reloaded is not None
+    assert reloaded.state is OrderState.FILLED
+    assert reloaded.filled_quantity == Decimal("1")
+    # The transition history was persisted too.
+    events = await store2.list_events("persist1")
+    assert OrderState.SUBMITTED in [e.to_state for e in events]
+    await db2.dispose()
 
 
 def _fill(coid: str, symbol: str, qty: str) -> Fill:

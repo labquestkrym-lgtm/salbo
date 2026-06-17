@@ -1,4 +1,4 @@
-﻿"""Orchestration worker loop: end-to-end live-style run (wiring test)."""
+"""Orchestration worker loop: end-to-end live-style run (wiring test)."""
 
 from __future__ import annotations
 
