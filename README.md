@@ -1,5 +1,7 @@
 # trading-bot — Delta-Hedged Long Straddle with Adaptive Gamma Scalping
 
+[![CI](https://github.com/labquestkrym-lgtm/salbo/actions/workflows/ci.yml/badge.svg)](https://github.com/labquestkrym-lgtm/salbo/actions/workflows/ci.yml)
+
 > ## ⚠️ Financial risk warning
 > This software trades options and futures. Derivatives can lose money rapidly.
 > No configuration, model, or backtest in this repository guarantees profit; a
