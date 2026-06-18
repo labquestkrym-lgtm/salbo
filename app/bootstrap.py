@@ -25,6 +25,7 @@ from app.brokers.mock import MockBrokerAdapter, MockMarketConfig
 from app.config.settings import AppSettings, load_settings
 from app.core.clock import SystemClock
 from app.core.logging import get_logger
+from app.notifications import EmailChannel, LogChannel, NotificationChannel, NotificationService
 from app.observability import Metrics
 from app.risk import KillSwitch, RiskManager
 from workers import Orchestrator, OrchestratorConfig
@@ -44,7 +45,10 @@ class Application:
 
 
 def build_application(
-    settings: AppSettings | None = None, *, autostart_orchestrator: bool = False
+    settings: AppSettings | None = None,
+    *,
+    autostart_orchestrator: bool = False,
+    notifier: NotificationService | None = None,
 ) -> Application:
     settings = settings or load_settings()
     clock = SystemClock()
@@ -54,7 +58,17 @@ def build_application(
     control = InMemoryControlPlane(settings, broker, risk)
     metrics = Metrics()
     audit = InMemoryAuditSink(clock=clock)
-    orchestrator = Orchestrator(clock, broker, risk, control, OrchestratorConfig(), metrics=metrics)
+    # Always log notifications; add email if configured. Telegram needs an HTTP
+    # client managed by the deployment, so it is injected via ``notifier``.
+    if notifier is None:
+        channels: list[NotificationChannel] = [LogChannel()]
+        email = EmailChannel.from_settings(settings)
+        if email is not None:
+            channels.append(email)
+        notifier = NotificationService(channels)
+    orchestrator = Orchestrator(
+        clock, broker, risk, control, OrchestratorConfig(), metrics=metrics, notifier=notifier
+    )
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:

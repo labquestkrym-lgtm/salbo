@@ -71,3 +71,45 @@ async def test_paused_orchestrator_does_not_open_new_position() -> None:
     await control.pause()  # PAUSED -> manage only, no new entry
     await orch.run()
     assert orch.opened is False
+
+
+async def test_orchestrator_emits_notifications() -> None:
+    from app.api.control import InMemoryControlPlane
+    from app.brokers.mock import MockBrokerAdapter, MockMarketConfig
+    from app.config.settings import AppSettings, RiskConfig
+    from app.core.clock import SimulatedClock
+    from app.notifications import CollectingChannel, NotificationService
+    from app.risk import KillSwitch, RiskManager
+    from workers import Orchestrator, OrchestratorConfig
+
+    clock = SimulatedClock(_NOW)
+    broker = MockBrokerAdapter(
+        clock,
+        MockMarketConfig(
+            spot0=100.0,
+            annual_vol=0.50,
+            option_iv=0.20,
+            dt_seconds=3600.0,
+            days_to_expiry=30,
+            seed=3,
+            max_stream_steps=200,
+        ),
+    )
+    control = InMemoryControlPlane(
+        AppSettings(), broker, RiskManager(RiskConfig(), KillSwitch(clock))
+    )
+    channel = CollectingChannel()
+    orch = Orchestrator(
+        clock,
+        broker,
+        RiskManager(RiskConfig(), KillSwitch(clock)),
+        control,
+        OrchestratorConfig(max_steps=120, lookback=30),
+        notifier=NotificationService([channel]),
+    )
+    await control.start(confirmation_code=None)
+    await orch.run()
+    events = {n.event for n in channel.sent}
+    assert "started" in events
+    assert "leg_filled" in events  # straddle opened -> leg notification
+    assert "hedged" in events  # delta hedged at least once
