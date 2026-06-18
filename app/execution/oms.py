@@ -136,6 +136,8 @@ class OrderManager:
         self._broker = broker
         self._store = store
         self._clock = clock
+        # broker_fill_ids already applied — guards against duplicate broker events.
+        self._applied_fills: set[str] = set()
 
     # --- transitions --------------------------------------------------------
     async def _transition(self, order: Order, dst: OrderState, detail: str = "") -> None:
@@ -214,6 +216,12 @@ class OrderManager:
         order = await self._store.get_order(fill.client_order_id)
         if order is None:
             raise OrderStateError(f"fill for unknown order {fill.client_order_id}")
+        # Idempotency: a duplicate broker fill event must not be counted twice.
+        if fill.broker_fill_id is not None:
+            if fill.broker_fill_id in self._applied_fills:
+                logger.info("duplicate_fill_ignored", broker_fill_id=fill.broker_fill_id)
+                return order
+            self._applied_fills.add(fill.broker_fill_id)
         new_filled = order.filled_quantity + fill.quantity
         if new_filled > order.request.quantity:
             raise OrderStateError(
