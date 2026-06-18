@@ -22,5 +22,6 @@ USER appuser
 
 EXPOSE 8000
 
-# Default command runs the control-plane API; override for workers/backtest.
-CMD ["uvicorn", "app.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+# Default command runs the wired control-plane API (broker + risk + control +
+# metrics + orchestrator lifespan). Override for workers/backtest.
+CMD ["uvicorn", "app.bootstrap:asgi", "--factory", "--host", "0.0.0.0", "--port", "8000"]

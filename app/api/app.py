@@ -14,6 +14,7 @@ from typing import Annotated, Any
 from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from pydantic import BaseModel
+from starlette.types import Lifespan
 
 from app import __version__
 from app.api.audit import AuditSink, InMemoryAuditSink
@@ -44,13 +45,14 @@ def create_app(
     clock: Clock | None = None,
     metrics: Metrics | None = None,
     ws_interval_seconds: float = 1.0,
+    lifespan: Lifespan[FastAPI] | None = None,
 ) -> FastAPI:
     settings = settings or load_settings()
     clock = clock or SystemClock()
     audit = audit or InMemoryAuditSink(clock=clock)
     metrics = metrics or Metrics()
     configure_logging()
-    app = FastAPI(title="trading-bot", version=__version__)
+    app = FastAPI(title="trading-bot", version=__version__, lifespan=lifespan)
     idempotency: dict[str, dict[str, Any]] = {}
 
     def require_auth(authorization: Annotated[str | None, Header()] = None) -> str:

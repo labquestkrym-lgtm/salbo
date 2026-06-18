@@ -142,10 +142,17 @@ Each stage ends with: format (ruff format) → lint (ruff) → types (mypy) → 
   so a fresh OMS over the same database recovers orders after a restart.
   Test: `test_sql_store_persists_oms_state_across_restart` (async SQLite).
 
+## Composition root + lifespan ✅
+- `app/bootstrap.py` wires broker + risk + control + metrics + audit +
+  orchestrator and exposes a FastAPI app whose lifespan optionally runs the
+  orchestrator as a supervised background task (cancelled cleanly on shutdown).
+  ASGI entry point: `uvicorn app.bootstrap:asgi --factory`. 2 tests.
+
 ## Remaining (post-v1)
 - A real `docker compose up` + `alembic upgrade head` run on a Docker host
-  (unavailable in this environment). All 30 traceability requirements are ✅;
-  the live runner is wired end-to-end in-process with a durable OMS store.
+  (unavailable in this environment). CI runs ruff/mypy/pytest + the SQLite
+  migration on every push. All 30 traceability requirements are ✅; the live
+  runner is wired end-to-end in one process with a durable OMS store.
 
 ## Definition of done (v1)
 The 17 acceptance criteria in the brief, section 11. Tracked in
