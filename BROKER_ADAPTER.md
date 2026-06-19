@@ -22,7 +22,24 @@ streaming, open interest) so higher layers adapt instead of assuming.
 |--------------------|----------|------------------------------------------------------------|
 | `MockBrokerAdapter`| ✅ Stage 4 | Deterministic GBM market for backtests/tests; bid/ask fills |
 | `PaperBrokerAdapter`| Stage 6  | Real market data, simulated fills (queue/latency/partials) |
-| `RealBrokerAdapter` | Stage 9  | A concrete broker; live disabled by default (ADR-0003)     |
+| `RealBrokerAdapter` | Stage 9  | Guarded template; live disabled by default (ADR-0003)      |
+| `TInvestBrokerAdapter`| concrete | T-Invest (T-Bank); lazy SDK import, sandbox-first, gated   |
+
+## T-Invest adapter (`app/brokers/tinkoff/`)
+Concrete adapter for the T-Invest (T-Bank / Tinkoff Investments) gRPC API.
+
+- **Tested core** (`conversions.py`, `instruments.py`): exact `Quotation`/
+  `MoneyValue` ↔ `Decimal`, order-direction/status mapping, and
+  future/option → `Instrument`/`ContractSpec` mapping (unit-tested with fakes).
+- **Adapter** (`adapter.py`): lazily imports `tinkoff-investments`
+  (`pip install ".[tinkoff]"`), so the project imports/tests without it.
+  Guards: non-sandbox endpoint refused in dev/test; order methods require all
+  live gates unless on sandbox. `order_id = client_order_id` gives broker-side
+  idempotency.
+- **Not CI-exercised**: networked methods need a token + network. Validate SDK
+  call signatures and instrument field names against your installed version on
+  **sandbox** first. Streaming / fills / margin / trading-schedule are left as
+  explicit `NotImplementedError` until validated.
 
 ## Rules every adapter must follow
 - **Never** assume option and futures lot sizes/multipliers are equal — always
