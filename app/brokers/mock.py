@@ -103,7 +103,8 @@ class MockBrokerAdapter(BaseBrokerAdapter):
         self._cfg.expiry = self._clock.now().date() + timedelta(days=self._cfg.days_to_expiry)
         self._rng = np.random.default_rng(self._cfg.seed)
         self._spot = self._cfg.spot0
-        self._sequence = 0
+        self._sequence = 0  # point-query / fill quotes
+        self._stream_sequence = 0  # the streamed feed has its own contiguous space
         self._step = 0
         self._connected = False
         self._stream_start = self._clock.now()
@@ -182,7 +183,7 @@ class MockBrokerAdapter(BaseBrokerAdapter):
         )
         return max(greeks.price, 0.0)
 
-    def _quote_for(self, inst: Instrument, now: datetime) -> Quote:
+    def _quote_for(self, inst: Instrument, now: datetime, *, sequence: int) -> Quote:
         spec = inst.spec
         mid = price_to_decimal(self._theoretical_mid(inst, now), spec)
         half = spec.tick_size * self._cfg.spread_ticks
@@ -192,7 +193,6 @@ class MockBrokerAdapter(BaseBrokerAdapter):
             bid = spec.tick_size
         if ask <= bid:
             ask = bid + spec.tick_size
-        self._sequence += 1
         return Quote(
             instrument_symbol=inst.symbol,
             timestamp=now,
@@ -201,8 +201,12 @@ class MockBrokerAdapter(BaseBrokerAdapter):
             bid_size=self._cfg.quote_size,
             ask_size=self._cfg.quote_size,
             last=mid,
-            sequence=self._sequence,
+            sequence=sequence,
         )
+
+    def _next_point_sequence(self) -> int:
+        self._sequence += 1
+        return self._sequence
 
     def _advance_price(self) -> None:
         c = self._cfg
@@ -254,15 +258,20 @@ class MockBrokerAdapter(BaseBrokerAdapter):
 
     # --- market data --------------------------------------------------------
     async def get_quote(self, symbol: str) -> Quote:
-        return self._quote_for(self._require(symbol), self._clock.now())
+        return self._quote_for(
+            self._require(symbol), self._clock.now(), sequence=self._next_point_sequence()
+        )
 
     async def stream_quotes(self, symbols: list[str]) -> AsyncIterator[Quote]:
+        # The streamed feed carries its own monotonic, contiguous sequence so
+        # interleaved point queries / order fills never look like feed gaps.
         instruments = [self._require(s) for s in symbols]
         for _ in range(self._cfg.max_stream_steps):
             self._advance_price()
             now = self._stream_start + timedelta(seconds=self._step * self._cfg.dt_seconds)
             for inst in instruments:
-                yield self._quote_for(inst, now)
+                self._stream_sequence += 1
+                yield self._quote_for(inst, now, sequence=self._stream_sequence)
 
     # --- account ------------------------------------------------------------
     async def get_positions(self) -> list[Position]:
@@ -295,7 +304,7 @@ class MockBrokerAdapter(BaseBrokerAdapter):
         )
         self._orders[request.client_order_id] = order
 
-        quote = self._quote_for(inst, now)
+        quote = self._quote_for(inst, now, sequence=self._next_point_sequence())
         fill_price = self._marketable_fill_price(request, quote)
         if fill_price is not None:
             self._apply_fill(order, inst, fill_price, now)

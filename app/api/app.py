@@ -8,7 +8,7 @@ enforces the live-trading gate and confirmation code (ADR-0003).
 """
 
 import asyncio
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
@@ -77,11 +77,14 @@ def create_app(
         action: str,
         detail: str,
         idem_key: str | None,
-        coro: Awaitable[dict[str, Any]],
+        command: Callable[[], Awaitable[dict[str, Any]]],
     ) -> dict[str, Any]:
+        # On an idempotent hit we return the cached result WITHOUT building or
+        # awaiting the command coroutine (passing a factory avoids creating —
+        # and leaking — a coroutine that would never be awaited).
         if idem_key and idem_key in idempotency:
             return idempotency[idem_key]
-        result = await coro
+        result = await command()
         audit.record(actor=actor, action=action, detail=detail)
         metrics.record_command(action)
         if idem_key:
@@ -162,7 +165,7 @@ def create_app(
                 action="strategy.start",
                 detail=f"mode={settings.app_mode.value}",
                 idem_key=idempotency_key,
-                coro=ctrl.start(confirmation_code=body.confirmation_code),
+                command=lambda: ctrl.start(confirmation_code=body.confirmation_code),
             )
         except ConfirmationRequiredError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -180,7 +183,7 @@ def create_app(
             action="strategy.stop",
             detail="",
             idem_key=idempotency_key,
-            coro=ctrl.stop(),
+            command=ctrl.stop,
         )
 
     @app.post("/strategy/pause")
@@ -194,7 +197,7 @@ def create_app(
             action="strategy.pause",
             detail="",
             idem_key=idempotency_key,
-            coro=ctrl.pause(),
+            command=ctrl.pause,
         )
 
     @app.post("/hedge")
@@ -208,7 +211,7 @@ def create_app(
             action="hedge",
             detail="manual hedge",
             idem_key=idempotency_key,
-            coro=ctrl.hedge(),
+            command=ctrl.hedge,
         )
 
     @app.post("/kill-switch")
@@ -225,7 +228,7 @@ def create_app(
             action="kill_switch",
             detail=body.reason or "manual",
             idem_key=idempotency_key,
-            coro=ctrl.trip_kill_switch(reason=body.reason or "manual"),
+            command=lambda: ctrl.trip_kill_switch(reason=body.reason or "manual"),
         )
         metrics.kill_switch_trips_total.inc()
         metrics.set_kill_switch(True)
@@ -243,7 +246,7 @@ def create_app(
                 action="reconcile",
                 detail="",
                 idem_key=idempotency_key,
-                coro=ctrl.reconcile(),
+                command=ctrl.reconcile,
             )
         except ReconciliationError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
