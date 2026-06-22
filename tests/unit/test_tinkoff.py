@@ -258,3 +258,99 @@ def test_methods_require_connection() -> None:
 
     with pytest.raises(BrokerError, match="not connected"):
         asyncio.run(adapter.get_quote("FUT"))
+
+
+# --- account/order/fill mapping (fake services, no network) ----------------
+class _AsyncReturn:
+    """A stand-in async SDK method that records kwargs and returns a fixed value."""
+
+    def __init__(self, value: object) -> None:
+        self._value = value
+        self.kwargs: dict = {}
+
+    async def __call__(self, **kwargs: object) -> object:
+        self.kwargs = kwargs
+        return self._value
+
+
+def _money(units: int, nano: int = 0, currency: str = "rub") -> SimpleNamespace:
+    return SimpleNamespace(units=units, nano=nano, currency=currency)
+
+
+def test_get_margin_maps_attributes() -> None:
+    import asyncio
+
+    margin = SimpleNamespace(
+        liquid_portfolio=_money(100000),
+        starting_margin=_money(30000),
+        minimal_margin=_money(20000),
+    )
+    client = SimpleNamespace(operations=SimpleNamespace(get_margin_attributes=_AsyncReturn(margin)))
+    adapter = TInvestBrokerAdapter(
+        _settings(app_environment=Environment.PRODUCTION),
+        SimulatedClock(_NOW),
+        sandbox=False,
+        account_id="acc",
+    )
+    adapter._client = client  # type: ignore[attr-defined]
+    m = asyncio.run(adapter.get_margin())
+    assert m.used_margin == Decimal("30000")
+    assert m.available_margin == Decimal("70000")  # liquid - starting
+    assert m.maintenance_margin == Decimal("20000")
+    assert m.currency == "RUB"
+
+
+def test_get_margin_unavailable_on_sandbox() -> None:
+    import asyncio
+
+    adapter = TInvestBrokerAdapter(_settings(), SimulatedClock(_NOW), sandbox=True)
+    with pytest.raises(BrokerError, match="sandbox"):
+        asyncio.run(adapter.get_margin())
+
+
+def test_get_open_orders_maps_states() -> None:
+    import asyncio
+
+    state = SimpleNamespace(
+        order_id="o1",
+        figi="FUT",
+        direction=1,  # BUY
+        lots_requested=5,
+        lots_executed=2,
+        execution_report_status=5,  # PARTIALLYFILL
+        average_position_price=_money(100),
+    )
+    client = SimpleNamespace(
+        sandbox=SimpleNamespace(get_sandbox_orders=_AsyncReturn(SimpleNamespace(orders=[state])))
+    )
+    adapter = TInvestBrokerAdapter(_settings(), SimulatedClock(_NOW), sandbox=True)
+    adapter._client = client  # type: ignore[attr-defined]
+    orders = asyncio.run(adapter.get_open_orders())
+    assert len(orders) == 1
+    o = orders[0]
+    assert o.state is OrderState.PARTIALLY_FILLED
+    assert o.filled_quantity == Decimal("2")
+    assert o.request.side is Side.BUY
+    assert o.average_fill_price == Decimal("100")
+
+
+def test_get_fills_maps_trades_and_skips_non_trade_ops() -> None:
+    import asyncio
+
+    trade = SimpleNamespace(trade_id="t1", date_time=_NOW, quantity=3, price=_money(150))
+    op_buy = SimpleNamespace(id="op1", figi="FUT", payment=_money(-450), date=_NOW, trades=[trade])
+    op_commission = SimpleNamespace(id="op2", figi="FUT", payment=_money(-1), date=_NOW, trades=[])
+    client = SimpleNamespace(
+        sandbox=SimpleNamespace(
+            get_sandbox_operations=_AsyncReturn(SimpleNamespace(operations=[op_buy, op_commission]))
+        )
+    )
+    adapter = TInvestBrokerAdapter(_settings(), SimulatedClock(_NOW), sandbox=True)
+    adapter._client = client  # type: ignore[attr-defined]
+    fills = asyncio.run(adapter.get_fills())
+    assert len(fills) == 1  # commission op (no trades) skipped
+    f = fills[0]
+    assert f.side is Side.BUY  # negative payment -> bought
+    assert f.quantity == Decimal("3")
+    assert f.price == Decimal("150")
+    assert f.broker_fill_id == "t1"

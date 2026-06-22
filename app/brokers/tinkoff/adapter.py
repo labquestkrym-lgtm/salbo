@@ -13,20 +13,22 @@ live-trading gates unless on sandbox.
 Verified live against the sandbox: connect, account open/fund, positions/cash,
 futures listing, order-book quotes, and **streaming** (order-book subscription).
 ``option_chain`` uses ``options_by`` (the full ``options()`` dump is unreliable
-on the sandbox). Fills, margin and trading-schedule remain explicit
-``NotImplementedError`` until validated.
+on the sandbox). Orders, margin, open-orders and fills are mapped against the
+documented SDK shapes but UNVERIFIED on the network (margin is live-only); the
+trading-schedule remains a static placeholder until validated.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import time
+from datetime import datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 
 from app.brokers.base import BaseBrokerAdapter, BrokerCapabilities
 from app.brokers.tinkoff.conversions import (
     decimal_to_quotation,
+    direction_to_side,
     order_status_to_state,
     quotation_obj_to_decimal,
     side_to_direction,
@@ -54,10 +56,45 @@ logger = get_logger(__name__)
 
 _ORDER_TYPE_LIMIT = 1
 _ORDER_TYPE_MARKET = 2
-_NOT_WIRED = (
-    "T-Invest {what} is not wired yet; implement against your installed "
-    "tinkoff-investments version and validate on sandbox before use."
-)
+_FILLS_LOOKBACK_DAYS = 1  # how far back get_fills scans operations (no int cursor in T-Invest)
+
+
+def _order_from_state(state: Any, now: datetime, *, client_order_id: str | None = None) -> Order:
+    """Map a T-Invest ``OrderState`` (from get_order_state / get_orders) to our
+    domain :class:`Order`. ``client_order_id`` overrides the id when the caller
+    already knows it (single-order lookup); otherwise the exchange ``order_id``
+    is used."""
+    oid = client_order_id or str(getattr(state, "order_id", "") or "unknown")
+    avg = getattr(state, "average_position_price", None)
+    # Reconstruct the order type: prefer the order's own price (initial), else the
+    # average fill price, as the LIMIT price; if neither is present, model it as a
+    # MARKET order (which must NOT carry a price). This is a best-effort live view.
+    price_obj = (
+        getattr(state, "initial_order_price", None)
+        or getattr(state, "initial_security_price", None)
+        or avg
+    )
+    price = quotation_obj_to_decimal(price_obj) if price_obj is not None else None
+    has_price = price is not None and price != 0
+    request = OrderRequest(
+        client_order_id=oid,
+        instrument_symbol=str(state.figi),
+        side=direction_to_side(int(state.direction)),
+        quantity=Decimal(int(state.lots_requested)) or Decimal("1"),
+        order_type=OrderType.LIMIT if has_price else OrderType.MARKET,
+        limit_price=price if has_price else None,
+    )
+    order = Order(
+        request=request,
+        state=order_status_to_state(int(state.execution_report_status)),
+        broker_order_id=str(getattr(state, "order_id", "") or oid),
+        filled_quantity=Decimal(int(state.lots_executed)),
+        created_at=now,
+        updated_at=now,
+    )
+    if avg is not None and order.filled_quantity > 0:
+        order.average_fill_price = quotation_obj_to_decimal(avg)
+    return order
 
 
 async def _safe_fetch(call: Any, what: str) -> list[Any]:
@@ -338,7 +375,24 @@ class TInvestBrokerAdapter(BaseBrokerAdapter):
         ]
 
     async def get_margin(self) -> MarginInfo:
-        raise NotImplementedError(_NOT_WIRED.format(what="margin (get_margin_attributes)"))
+        """Portfolio margin via ``operations.get_margin_attributes``. This RPC is
+        a live-only feature (the sandbox does not expose margin attributes).
+
+        Mapping: ``used_margin`` = starting (initial) margin, ``available_margin``
+        = liquid portfolio minus starting margin, ``maintenance_margin`` = minimal
+        margin. The currency comes from the liquid-portfolio MoneyValue."""
+        if self._sandbox:
+            raise BrokerError("margin attributes are not available on the T-Invest sandbox")
+        attrs = await self._svc().operations.get_margin_attributes(account_id=self._account_id)
+        liquid = quotation_obj_to_decimal(attrs.liquid_portfolio)
+        starting = quotation_obj_to_decimal(attrs.starting_margin)
+        minimal = quotation_obj_to_decimal(attrs.minimal_margin)
+        return MarginInfo(
+            currency=str(attrs.liquid_portfolio.currency).upper(),
+            used_margin=max(starting, Decimal("0")),
+            available_margin=liquid - starting,
+            maintenance_margin=max(minimal, Decimal("0")),
+        )
 
     # --- orders -------------------------------------------------------------
     async def place_order(self, request: OrderRequest) -> Order:
@@ -383,27 +437,62 @@ class TInvestBrokerAdapter(BaseBrokerAdapter):
         svc = self._svc()
         state = svc.sandbox.get_sandbox_order_state if self._sandbox else svc.orders.get_order_state
         st = await state(account_id=self._account_id, order_id=client_order_id)
-        request = OrderRequest(
-            client_order_id=client_order_id,
-            instrument_symbol=str(st.figi),
-            side=Side.BUY if int(st.direction) == 1 else Side.SELL,
-            quantity=Decimal(int(st.lots_requested)) or Decimal("1"),
-            order_type=OrderType.LIMIT,
-        )
-        order = Order(
-            request=request,
-            state=order_status_to_state(int(st.execution_report_status)),
-            broker_order_id=client_order_id,
-            filled_quantity=Decimal(int(st.lots_executed)),
-            created_at=self._clock.now(),
-            updated_at=self._clock.now(),
-        )
-        if st.average_position_price and order.filled_quantity > 0:
-            order.average_fill_price = quotation_obj_to_decimal(st.average_position_price)
-        return order
+        return _order_from_state(st, self._clock.now(), client_order_id=client_order_id)
 
     async def get_open_orders(self) -> list[Order]:
-        raise NotImplementedError(_NOT_WIRED.format(what="open-orders listing (get_orders)"))
+        svc = self._svc()
+        get = svc.sandbox.get_sandbox_orders if self._sandbox else svc.orders.get_orders
+        resp = await get(account_id=self._account_id)
+        now = self._clock.now()
+        out: list[Order] = []
+        for o in getattr(resp, "orders", []):
+            try:
+                out.append(_order_from_state(o, now))
+            except Exception as exc:  # one malformed entry must not drop the list
+                logger.debug("open_order_skipped", error=str(exc))
+        return out
 
     async def get_fills(self, since_sequence: int | None = None) -> list[Fill]:
-        raise NotImplementedError(_NOT_WIRED.format(what="fills (operations stream)"))
+        """Executions over a recent window via ``OperationsService``.
+
+        T-Invest exposes fills over a TIME RANGE, not an integer cursor, so
+        ``since_sequence`` is ignored (kept for the broker interface). Each
+        operation that carries ``trades`` is one buy/sell; we emit one
+        :class:`Fill` per trade leg. Side is inferred from the payment sign
+        (buy pays out -> negative). Per-leg commission is not attributable here
+        (it arrives as a separate operation), so it defaults to 0; the
+        ``client_order_id`` falls back to the operation id (operations do not
+        echo the original order id)."""
+        svc = self._svc()
+        now = self._clock.now()
+        frm = now - timedelta(days=_FILLS_LOOKBACK_DAYS)
+        get = svc.sandbox.get_sandbox_operations if self._sandbox else svc.operations.get_operations
+        resp = await get(account_id=self._account_id, from_=frm, to=now)
+        out: list[Fill] = []
+        for op in getattr(resp, "operations", []):
+            trades = getattr(op, "trades", None) or []
+            if not trades:
+                continue  # non-trade operation (commission, payin, ...)
+            payment = op.payment if getattr(op, "payment", None) else None
+            side = (
+                Side.BUY
+                if (payment is not None and quotation_obj_to_decimal(payment) < 0)
+                else Side.SELL
+            )
+            for tr in trades:
+                trade_id = getattr(tr, "trade_id", None)
+                try:
+                    out.append(
+                        Fill(
+                            client_order_id=str(getattr(op, "id", "") or "unknown"),
+                            instrument_symbol=str(op.figi),
+                            side=side,
+                            quantity=Decimal(int(tr.quantity)),
+                            price=quotation_obj_to_decimal(tr.price),
+                            timestamp=getattr(tr, "date_time", None) or op.date,
+                            broker_fill_id=str(trade_id) if trade_id else None,
+                        )
+                    )
+                except Exception as exc:  # skip a malformed trade leg, keep the rest
+                    logger.debug("fill_skipped", error=str(exc))
+        return out
