@@ -55,6 +55,26 @@ _NOT_WIRED = (
 )
 
 
+async def _safe_fetch(call: Any, what: str) -> list[Any]:
+    """Fetch one instrument class, degrading to an empty list (with a warning)
+    if the RPC fails — a transient error on one class must not drop the rest."""
+    try:
+        return list((await call()).instruments)
+    except Exception as exc:  # transient gRPC / one instrument class unavailable
+        logger.warning("instrument_fetch_failed", what=what, error=str(exc))
+        return []
+
+
+def _try_map(mapper: Any, obj: Any, out: list[Instrument]) -> None:
+    """Map one SDK instrument, skipping (with a log) any that don't fit our
+    contract — real universes contain instruments with missing/odd fields, and
+    one bad item must not drop the whole list."""
+    try:
+        out.append(mapper(obj))
+    except Exception as exc:  # resilience over a large, noisy instrument universe
+        logger.debug("instrument_skipped", figi=getattr(obj, "figi", "?"), error=str(exc))
+
+
 def _load_sdk() -> Any:
     try:
         import tinkoff.invest as ti
@@ -166,14 +186,12 @@ class TInvestBrokerAdapter(BaseBrokerAdapter):
     async def list_instruments(self, underlying_symbol: str | None = None) -> list[Instrument]:
         svc = self._svc()
         out: list[Instrument] = []
-        futures = (await svc.instruments.futures()).instruments
-        options = (await svc.instruments.options()).instruments
-        for fut in futures:
+        for fut in await _safe_fetch(svc.instruments.futures, "futures"):
             if underlying_symbol is None or str(fut.basic_asset) == underlying_symbol:
-                out.append(future_to_instrument(fut))
-        for opt in options:
+                _try_map(future_to_instrument, fut, out)
+        for opt in await _safe_fetch(svc.instruments.options, "options"):
             if underlying_symbol is None or str(opt.basic_asset) == underlying_symbol:
-                out.append(option_to_instrument(opt))
+                _try_map(option_to_instrument, opt, out)
         return out
 
     async def get_contract_spec(self, symbol: str) -> ContractSpec:
@@ -209,8 +227,15 @@ class TInvestBrokerAdapter(BaseBrokerAdapter):
         raise NotImplementedError(_NOT_WIRED.format(what="market-data streaming"))
 
     # --- account ------------------------------------------------------------
+    async def _positions_response(self) -> Any:
+        # Sandbox positions live on the SandboxService, not OperationsService.
+        svc = self._svc()
+        if self._sandbox:
+            return await svc.sandbox.get_sandbox_positions(account_id=self._account_id)
+        return await svc.operations.get_positions(account_id=self._account_id)
+
     async def get_positions(self) -> list[Position]:
-        res = await self._svc().operations.get_positions(account_id=self._account_id)
+        res = await self._positions_response()
         out: list[Position] = []
         for s in res.securities:
             out.append(Position(instrument_symbol=str(s.figi), quantity=Decimal(s.balance)))
@@ -219,7 +244,7 @@ class TInvestBrokerAdapter(BaseBrokerAdapter):
         return out
 
     async def get_cash(self) -> list[CashBalance]:
-        res = await self._svc().operations.get_positions(account_id=self._account_id)
+        res = await self._positions_response()
         return [
             CashBalance(currency=str(m.currency).upper(), cash=quotation_obj_to_decimal(m))
             for m in res.money
@@ -237,9 +262,9 @@ class TInvestBrokerAdapter(BaseBrokerAdapter):
         kwargs: dict[str, Any] = {
             "instrument_id": request.instrument_symbol,
             "quantity": int(request.quantity),
-            "direction": side_to_direction(request.side),
+            "direction": ti.OrderDirection(side_to_direction(request.side)),
             "account_id": self._account_id,
-            "order_type": _ORDER_TYPE_MARKET if is_market else _ORDER_TYPE_LIMIT,
+            "order_type": ti.OrderType(_ORDER_TYPE_MARKET if is_market else _ORDER_TYPE_LIMIT),
             "order_id": request.client_order_id,  # idempotency key
         }
         if not is_market and request.limit_price is not None:

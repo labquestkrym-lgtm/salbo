@@ -14,6 +14,7 @@ __pycache__/
 build/
 dist/
 .venv/
+.venv*/
 venv/
 .env/
 .python-version
