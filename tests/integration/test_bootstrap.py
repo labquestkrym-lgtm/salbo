@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 from fastapi.testclient import TestClient
 
-from app.bootstrap import build_application
+from app.bootstrap import asgi, build_application
 from app.config.settings import AppSettings
 
 
@@ -57,6 +60,28 @@ def test_tinkoff_broker_drives_options_on_futures_strategy() -> None:
     assert app.orchestrator._cfg.symbol == app.settings.params.strategy.symbol
     # In dev with live gates unmet the adapter stays on the sandbox endpoint.
     assert app.broker._sandbox is True  # type: ignore[attr-defined]
+
+
+def test_asgi_factory_loads_config_from_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The live runner is configured via CONFIG_PATH; without this the YAML risk
+    # limits / mode are never loaded and live can never start.
+    cfg = tmp_path / "params.yaml"
+    cfg.write_text(
+        "app:\n  environment: development\n  mode: paper\nrisk:\n  maximum_daily_loss: 12345\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CONFIG_PATH", str(cfg))
+    monkeypatch.setenv("API_AUTH_TOKEN", "tok")
+    monkeypatch.setenv("AUTOSTART_ORCHESTRATOR", "false")
+    api = asgi()
+    with TestClient(api) as client:
+        resp = client.get("/config", headers={"Authorization": "Bearer tok"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["mode"] == "paper"  # came from the YAML, not the default
+        assert body["risk"]["maximum_daily_loss"] == "12345"
 
 
 def test_lifespan_starts_and_stops_orchestrator_cleanly() -> None:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
@@ -160,6 +161,22 @@ def build_application(
     )
 
 
+def _truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def asgi() -> FastAPI:
-    """ASGI factory for ``uvicorn app.bootstrap:asgi --factory``."""
-    return build_application().api
+    """ASGI factory for ``uvicorn app.bootstrap:asgi --factory``.
+
+    Reads two env vars so the live runner can be configured without code:
+    * ``CONFIG_PATH`` — path to the YAML parameters file (risk limits, mode,
+      strategy). Without it, defaults apply and live trading stays blocked
+      (mandatory risk limits are 0).
+    * ``AUTOSTART_ORCHESTRATOR`` — start the strategy worker on boot (only takes
+      effect for brokers whose loop is wired AND, for T-Invest, when all live
+      gates pass).
+    """
+    settings = load_settings(os.environ.get("CONFIG_PATH"))
+    return build_application(
+        settings, autostart_orchestrator=_truthy(os.environ.get("AUTOSTART_ORCHESTRATOR"))
+    ).api
