@@ -118,6 +118,52 @@ async def test_orchestrator_emits_notifications() -> None:
     assert {"symbol", "side", "contracts", "price"} <= set(hedge.fields)
 
 
+async def test_orchestrator_options_on_futures_opens_hedges_and_notifies() -> None:
+    # FORTS-style: options on the future (Black-76), no equity underlying. The
+    # future is the spot/forward reference for entry, greeks and the delta hedge.
+    from app.notifications import CollectingChannel, NotificationService
+
+    clock = SimulatedClock(_NOW)
+    broker = MockBrokerAdapter(
+        clock,
+        MockMarketConfig(
+            spot0=100.0,
+            annual_vol=0.50,
+            option_iv=0.20,
+            dt_seconds=3600.0,
+            days_to_expiry=30,
+            seed=3,
+            max_stream_steps=200,
+            options_on_futures=True,
+        ),
+    )
+    # No equity instrument exists in this mode.
+    assert all(i.asset_class.value != "equity" for i in await broker.list_instruments("XYZ"))
+    control = InMemoryControlPlane(
+        AppSettings(), broker, RiskManager(RiskConfig(), KillSwitch(clock))
+    )
+    channel = CollectingChannel()
+    orch = Orchestrator(
+        clock,
+        broker,
+        RiskManager(RiskConfig(), KillSwitch(clock)),
+        control,
+        OrchestratorConfig(max_steps=120, lookback=30, dt_seconds=3600.0, options_on_futures=True),
+        notifier=NotificationService([channel]),
+    )
+    await control.start(confirmation_code=None)
+    await orch.run()
+    assert orch.opened is True
+    assert orch.hedge_count > 0
+    events = {n.event for n in channel.sent}
+    assert {"started", "leg_filled", "hedged"} <= events
+    # The hedge trades the future (the spot reference), and greeks were published.
+    hedge = next(n for n in channel.sent if n.event == "hedged")
+    assert "FUT" in hedge.fields["symbol"]
+    greeks = await control.greeks()
+    assert greeks["available"] is True
+
+
 async def test_orchestrator_notifies_on_position_close() -> None:
     from app.notifications import CollectingChannel, NotificationService
 

@@ -33,6 +33,29 @@ def test_resolve_straddle() -> None:
     assert straddle.underlying.asset_class is AssetClass.EQUITY
 
 
+def test_resolve_straddle_on_future() -> None:
+    # FORTS-style: options written on the future, no equity underlying. The
+    # future itself is the spot/forward reference (underlying == future).
+    clock = SimulatedClock(datetime(2026, 1, 5, 15, 0, tzinfo=UTC))
+    broker = MockBrokerAdapter(clock, MockMarketConfig(options_on_futures=True))
+    resolver = InstrumentResolver(list(broker._instruments.values()))
+    expiry = resolver.expiries("XYZ")[0]
+    straddle = resolver.resolve_straddle_on_future("XYZ", expiry=expiry, strike=Decimal("100"))
+    assert straddle.underlying.asset_class is AssetClass.FUTURE
+    assert straddle.underlying is straddle.future
+    assert straddle.call.pricing_model is PricingModel.BLACK_76
+    assert straddle.put.pricing_model is PricingModel.BLACK_76
+
+
+def test_resolve_straddle_on_future_missing_strike_raises() -> None:
+    clock = SimulatedClock(datetime(2026, 1, 5, 15, 0, tzinfo=UTC))
+    broker = MockBrokerAdapter(clock, MockMarketConfig(options_on_futures=True))
+    resolver = InstrumentResolver(list(broker._instruments.values()))
+    expiry = resolver.expiries("XYZ")[0]
+    with pytest.raises(InstrumentResolutionError):
+        resolver.resolve_straddle_on_future("XYZ", expiry=expiry, strike=Decimal("123"))
+
+
 def test_option_and_future_multipliers_may_differ() -> None:
     resolver, _ = _resolver()
     expiry = resolver.expiries("XYZ")[0]

@@ -43,7 +43,7 @@ from app.models import (
     Quote,
     TradingSession,
 )
-from app.pricing import bsm
+from app.pricing import black76, bsm
 from app.pricing.quantize import ceil_to_tick, floor_to_tick, price_to_decimal
 
 _YEAR_SECONDS = 365.0 * 24 * 3600
@@ -90,6 +90,9 @@ class MockMarketConfig:
     strikes: tuple[float, ...] = (90.0, 95.0, 100.0, 105.0, 110.0)
     starting_cash: Decimal = Decimal("1000000")
     max_stream_steps: int = 1000
+    # When True, model FORTS-style options ON the future (Black-76, no equity);
+    # the future is the spot/forward reference. Otherwise: equity options (BSM).
+    options_on_futures: bool = False
 
     expiry: date = field(default_factory=lambda: datetime.now(UTC).date() + timedelta(days=30))
 
@@ -121,13 +124,15 @@ class MockBrokerAdapter(BaseBrokerAdapter):
         c = self._cfg
         u = c.underlying_symbol
         exp_tag = c.expiry.strftime("%Y%m%d")
-        self._instruments[u] = Instrument(
-            symbol=u,
-            underlying_symbol=u,
-            asset_class=AssetClass.EQUITY,
-            spec=_EQUITY_SPEC,
-            pricing_model=None,
-        )
+        # Equity underlying exists only in equity-options mode.
+        if not c.options_on_futures:
+            self._instruments[u] = Instrument(
+                symbol=u,
+                underlying_symbol=u,
+                asset_class=AssetClass.EQUITY,
+                spec=_EQUITY_SPEC,
+                pricing_model=None,
+            )
         self._future_symbol = f"{u}-FUT-{exp_tag}"
         self._instruments[self._future_symbol] = Instrument(
             symbol=self._future_symbol,
@@ -135,6 +140,9 @@ class MockBrokerAdapter(BaseBrokerAdapter):
             asset_class=AssetClass.FUTURE,
             spec=_FUTURE_SPEC,
             expiry=c.expiry,
+        )
+        option_model = (
+            PricingModel.BLACK_76 if c.options_on_futures else PricingModel.BLACK_SCHOLES_MERTON
         )
         for strike in c.strikes:
             for ot, tag in ((OptionType.CALL, "C"), (OptionType.PUT, "P")):
@@ -148,7 +156,7 @@ class MockBrokerAdapter(BaseBrokerAdapter):
                     option_type=ot,
                     strike=Decimal(str(strike)),
                     option_style=OptionStyle.EUROPEAN,
-                    pricing_model=PricingModel.BLACK_SCHOLES_MERTON,
+                    pricing_model=option_model,
                 )
 
     @property
@@ -172,15 +180,27 @@ class MockBrokerAdapter(BaseBrokerAdapter):
         # option
         assert inst.expiry is not None and inst.strike is not None and inst.option_type is not None
         tau = self._tau_years(inst.expiry, now)
-        greeks = bsm(
-            spot=self._spot,
-            strike=float(inst.strike),
-            t=tau,
-            rate=c.rate,
-            sigma=c.option_iv,
-            option_type=inst.option_type,
-            dividend_yield=c.dividend_yield,
-        )
+        if inst.pricing_model is PricingModel.BLACK_76:
+            # Option on the future: forward = the future's price.
+            forward = self._spot * math.exp((c.rate - c.dividend_yield) * tau)
+            greeks = black76(
+                forward=forward,
+                strike=float(inst.strike),
+                t=tau,
+                rate=c.rate,
+                sigma=c.option_iv,
+                option_type=inst.option_type,
+            )
+        else:
+            greeks = bsm(
+                spot=self._spot,
+                strike=float(inst.strike),
+                t=tau,
+                rate=c.rate,
+                sigma=c.option_iv,
+                option_type=inst.option_type,
+                dividend_yield=c.dividend_yield,
+            )
         return max(greeks.price, 0.0)
 
     def _quote_for(self, inst: Instrument, now: datetime, *, sequence: int) -> Quote:

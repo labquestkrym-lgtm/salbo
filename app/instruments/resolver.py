@@ -116,6 +116,31 @@ class InstrumentResolver:
             expiry=expiry,
         )
 
+    def resolve_straddle_on_future(
+        self, underlying_symbol: str, *, expiry: date, strike: Decimal
+    ) -> ResolvedStraddle:
+        """Options-on-futures straddle: the hedging future is also the spot/forward
+        reference (``underlying``). Used for FORTS-style markets (e.g. MOEX via
+        T-Invest) where options are written on a future, not on an equity."""
+        future = self.nearest_future(underlying_symbol, on_or_after=expiry)
+        call = self.find_option(underlying_symbol, expiry, strike, OptionType.CALL)
+        put = self.find_option(underlying_symbol, expiry, strike, OptionType.PUT)
+        if call is None or put is None:
+            raise InstrumentResolutionError(
+                f"missing {'call' if call is None else 'put'} at "
+                f"{underlying_symbol} {expiry} strike {strike}"
+            )
+        self.validate_hedge_pair(call, future)
+        self.validate_hedge_pair(put, future)
+        return ResolvedStraddle(
+            underlying=future,  # the future is the spot/forward reference and the hedge
+            future=future,
+            call=call,
+            put=put,
+            strike=strike,
+            expiry=expiry,
+        )
+
     def validate_hedge_pair(self, option: Instrument, future: Instrument) -> None:
         """Validate that ``future`` can hedge ``option``. Multipliers/lots may
         legitimately differ and are NOT required to match — only the underlying,

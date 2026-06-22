@@ -55,6 +55,9 @@ class OrchestratorConfig:
     # Feed cadence in seconds; MUST match the market-data interval so realized
     # volatility is annualized correctly (and staleness is judged sanely).
     dt_seconds: float = 1.0
+    # FORTS-style options on the future (Black-76, future as spot/forward) vs
+    # equity options (BSM, equity as spot).
+    options_on_futures: bool = False
     lookback: int = 30
     entry_contracts: int = 5
     exit_min_days_to_expiry: int = 0
@@ -109,6 +112,9 @@ class Orchestrator:
         self._opened = False
         self._hedge_count = 0
         self._underlying_mids: list[float] = []
+        # The spot/forward reference symbol; finalized in run() once the straddle
+        # is resolved (equity in equity mode, the future in options-on-futures mode).
+        self._spot_symbol = config.symbol
 
     @property
     def opened(self) -> bool:
@@ -126,10 +132,29 @@ class Orchestrator:
         resolver = InstrumentResolver(instruments)
         expiry = resolver.expiries(sym)[0]
         strikes = resolver.strikes(sym, expiry)
-        anchor = await self._spot_anchor(sym, strikes)
-        strike = min(strikes, key=lambda k: abs(k - anchor))
-        straddle = resolver.resolve_straddle(sym, expiry=expiry, strike=strike)
-        symbols = [sym, straddle.future.symbol, straddle.call.symbol, straddle.put.symbol]
+        if self._cfg.options_on_futures:
+            # The future is the spot/forward reference — anchor and quote off it.
+            spot_ref = resolver.nearest_future(sym, on_or_after=expiry).symbol
+            anchor = await self._spot_anchor(spot_ref, strikes)
+            strike = min(strikes, key=lambda k: abs(k - anchor))
+            straddle = resolver.resolve_straddle_on_future(sym, expiry=expiry, strike=strike)
+        else:
+            anchor = await self._spot_anchor(sym, strikes)
+            strike = min(strikes, key=lambda k: abs(k - anchor))
+            straddle = resolver.resolve_straddle(sym, expiry=expiry, strike=strike)
+        # The spot/forward reference instrument (equity in equity mode, future in
+        # options-on-futures mode). All spot reads and the MDS feed key off this.
+        self._spot_symbol = straddle.underlying.symbol
+        symbols = list(
+            dict.fromkeys(
+                [
+                    self._spot_symbol,
+                    straddle.future.symbol,
+                    straddle.call.symbol,
+                    straddle.put.symbol,
+                ]
+            )
+        )
         if self._notifier is not None:
             await self._notifier.started(self._control._settings.app_mode.value)
 
@@ -148,7 +173,7 @@ class Orchestrator:
 
     async def _tick(self, straddle: ResolvedStraddle, now: datetime, step: int) -> None:
         run_state = self._control.run_state
-        u_mid = self._mds.mid(self._cfg.symbol)
+        u_mid = self._mds.mid(self._spot_symbol)
         if u_mid is not None:
             self._underlying_mids.append(float(u_mid))
         if run_state is StrategyRunState.STOPPED or u_mid is None:

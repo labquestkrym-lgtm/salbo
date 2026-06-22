@@ -79,13 +79,22 @@ def test_option_on_future_priced_with_black76_not_bsm() -> None:
 
     expiry = date(2026, 2, 4)
     spec = ContractSpec(
-        tick_size=Decimal("0.01"), tick_value=Decimal("1"), lot_size=1,
-        multiplier=Decimal("10"), currency="RUB",
+        tick_size=Decimal("0.01"),
+        tick_value=Decimal("1"),
+        lot_size=1,
+        multiplier=Decimal("10"),
+        currency="RUB",
     )
     opt = Instrument(
-        symbol="FUT-C-100", underlying_symbol="FUT", asset_class=AssetClass.OPTION, spec=spec,
-        expiry=expiry, option_type=OptionType.CALL, strike=Decimal("100"),
-        option_style=OptionStyle.EUROPEAN, pricing_model=PricingModel.BLACK_76,
+        symbol="FUT-C-100",
+        underlying_symbol="FUT",
+        asset_class=AssetClass.OPTION,
+        spec=spec,
+        expiry=expiry,
+        option_type=OptionType.CALL,
+        strike=Decimal("100"),
+        option_style=OptionStyle.EUROPEAN,
+        pricing_model=PricingModel.BLACK_76,
     )
     engine = PortfolioGreeksEngine({opt.symbol: opt})
     valuation = datetime(2026, 1, 5, tzinfo=UTC)
@@ -101,10 +110,10 @@ def test_option_on_future_priced_with_black76_not_bsm() -> None:
     tau = (datetime(2026, 2, 4, 23, 59, 59, tzinfo=UTC) - valuation).total_seconds() / (
         365 * 24 * 3600
     )
-    b76 = black76(forward=100.0, strike=100.0, t=tau, rate=0.05, sigma=0.25,
-                  option_type=OptionType.CALL)
-    bsm_g = bsm(spot=100.0, strike=100.0, t=tau, rate=0.05, sigma=0.25,
-                option_type=OptionType.CALL)
+    b76 = black76(
+        forward=100.0, strike=100.0, t=tau, rate=0.05, sigma=0.25, option_type=OptionType.CALL
+    )
+    bsm_g = bsm(spot=100.0, strike=100.0, t=tau, rate=0.05, sigma=0.25, option_type=OptionType.CALL)
     assert g.net_delta_units == pytest.approx(b76.delta * 10.0, rel=1e-9)
     assert g.net_delta_units != pytest.approx(bsm_g.delta * 10.0, rel=1e-6)  # truly Black-76
 
