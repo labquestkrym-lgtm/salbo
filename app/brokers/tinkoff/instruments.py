@@ -38,37 +38,56 @@ def _instrument_id(obj: Any) -> str:
     return str(ident)
 
 
-def contract_spec_from(obj: Any) -> ContractSpec:
+def basic_asset_size(obj: Any) -> Decimal | None:
+    """Underlying units per contract (FORTS ``basic_asset_size``): shares for a
+    stock future, 1 for an option quoted per share. ``None`` if absent."""
+    bas = getattr(obj, "basic_asset_size", None)
+    if bas is None or getattr(bas, "units", None) is None:
+        return None
+    return quotation_obj_to_decimal(bas)
+
+
+def contract_spec_from(
+    obj: Any, *, multiplier: Decimal | None = None, quote_scale: Decimal | None = None
+) -> ContractSpec:
     tick_size = quotation_obj_to_decimal(obj.min_price_increment)
     if tick_size <= 0:
         raise InstrumentResolutionError("min_price_increment must be positive")
     amount = getattr(obj, "min_price_increment_amount", None)
     if amount is not None and getattr(amount, "units", None) is not None:
         tick_value = quotation_obj_to_decimal(amount)
-        multiplier = tick_value / tick_size
+        tick_multiplier = tick_value / tick_size
     else:
         tick_value = tick_size
-        multiplier = Decimal("1")
+        tick_multiplier = Decimal("1")
     return ContractSpec(
         tick_size=tick_size,
         tick_value=tick_value,
         lot_size=int(obj.lot),
-        multiplier=multiplier,
+        multiplier=multiplier if multiplier is not None and multiplier > 0 else tick_multiplier,
         currency=str(obj.currency).upper(),
+        quote_scale=quote_scale if quote_scale is not None and quote_scale > 0 else Decimal(1),
     )
 
 
 def future_to_instrument(fut: Any) -> Instrument:
+    # FORTS stock future: quoted per contract (= per share x basic_asset_size), and
+    # its delta multiplier (underlying units per contract) is basic_asset_size.
+    size = basic_asset_size(fut)
     return Instrument(
         symbol=_instrument_id(fut),
         underlying_symbol=str(fut.basic_asset),
         asset_class=AssetClass.FUTURE,
-        spec=contract_spec_from(fut),
+        spec=contract_spec_from(fut, multiplier=size, quote_scale=size),
         expiry=fut.expiration_date.date(),
     )
 
 
-def option_to_instrument(opt: Any) -> Instrument:
+def option_to_instrument(opt: Any, *, contract_size: Decimal | None = None) -> Instrument:
+    """Map a T-Invest option. ``contract_size`` (underlying units per contract) is
+    supplied by the chain assembly from the hedging future's ``basic_asset_size``
+    — a FORTS option is 1:1 with its future, so it covers the same units. Strike
+    and premium are quoted per underlying unit (quote_scale stays 1)."""
     option_type = _OPTION_DIRECTION.get(int(opt.direction))
     if option_type is None:
         raise InstrumentResolutionError(f"unknown option direction {opt.direction}")
@@ -76,7 +95,7 @@ def option_to_instrument(opt: Any) -> Instrument:
         symbol=_instrument_id(opt),
         underlying_symbol=str(opt.basic_asset),
         asset_class=AssetClass.OPTION,
-        spec=contract_spec_from(opt),
+        spec=contract_spec_from(opt, multiplier=contract_size),
         expiry=opt.expiration_date.date(),
         option_type=option_type,
         strike=quotation_obj_to_decimal(opt.strike_price),

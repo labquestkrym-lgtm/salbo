@@ -30,9 +30,14 @@ class ContractSpec(BaseModel):
     tick_size: Decimal = Field(gt=0, description="Minimum price increment")
     tick_value: Decimal = Field(gt=0, description="Cash value of one tick per contract")
     lot_size: int = Field(gt=0, description="Underlying units per contract/lot")
-    multiplier: Decimal = Field(gt=0, description="Contract multiplier (P&L per 1.0 price move)")
+    multiplier: Decimal = Field(gt=0, description="Underlying units per contract (delta/hedge)")
     currency: str = Field(min_length=1)
     settlement: SettlementType = SettlementType.CASH
+    # Factor by which the instrument's QUOTED price exceeds the per-underlying-unit
+    # price. 1 for equities/options and for futures quoted per underlying unit;
+    # >1 for FORTS futures quoted per contract (e.g. SBER future = share x100).
+    # The per-unit price used by the pricing kernel is quote / quote_scale.
+    quote_scale: Decimal = Field(default=Decimal(1), gt=0)
 
     def round_to_tick(self, price: Decimal) -> Decimal:
         """Quantize a price to the nearest valid tick."""

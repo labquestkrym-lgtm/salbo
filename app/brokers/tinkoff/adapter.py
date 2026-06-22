@@ -34,7 +34,11 @@ from app.brokers.tinkoff.conversions import (
     quotation_obj_to_decimal,
     side_to_direction,
 )
-from app.brokers.tinkoff.instruments import future_to_instrument, option_to_instrument
+from app.brokers.tinkoff.instruments import (
+    basic_asset_size,
+    future_to_instrument,
+    option_to_instrument,
+)
 from app.config.settings import AppSettings
 from app.core.clock import Clock
 from app.core.enums import OrderType, Side
@@ -270,8 +274,12 @@ class TInvestBrokerAdapter(BaseBrokerAdapter):
         asset_uid = await self._basic_asset_uid(fut, underlying_symbol)
         if asset_uid is None:
             return []
+        # A FORTS option is 1:1 with its future, so it covers the same underlying
+        # units (the future's basic_asset_size, e.g. 100 shares). Stamp that onto
+        # the option as its delta multiplier (the option's own basic_asset_size is 1).
+        contract_size = basic_asset_size(fut)
         try:
-            chain = await self.option_chain(asset_uid)
+            chain = await self.option_chain(asset_uid, contract_size=contract_size)
         except Exception as exc:  # one underlying's chain unavailable must not abort
             logger.warning("option_chain_failed", underlying=underlying_symbol, error=str(exc))
             return []
@@ -363,20 +371,20 @@ class TInvestBrokerAdapter(BaseBrokerAdapter):
                 sequence=None,
             )
 
-    async def option_chain(self, basic_asset_uid: str) -> list[Instrument]:
+    async def option_chain(
+        self, basic_asset_uid: str, *, contract_size: Decimal | None = None
+    ) -> list[Instrument]:
         """Option chain for one underlying via ``options_by`` (the filtered call;
-        the full ``options()`` dump is unreliable on the sandbox).
+        the full ``options()`` dump is deprecated and errors with "Stream removed").
 
-        ``basic_asset_uid`` is the underlying *asset* uid — note this is NOT a
-        future's ``uid``/``position_uid`` (those raise INVALID_ARGUMENT). Linking
-        a hedging future to its option chain's asset uid, plus an
-        options-on-futures path in InstrumentResolver, is required before the
-        straddle can run on T-Invest (the resolver currently assumes an equity
-        underlying)."""
+        ``basic_asset_uid`` is the underlying *asset* uid (e.g. a share's
+        ``asset_uid``) — NOT a future's ``uid``/``position_uid``. ``contract_size``
+        (underlying units per contract) is stamped onto each option as its delta
+        multiplier; the chain assembly derives it from the hedging future."""
         resp = await self._svc().instruments.options_by(basic_asset_uid=basic_asset_uid)
         out: list[Instrument] = []
         for opt in resp.instruments:
-            _try_map(option_to_instrument, opt, out)
+            _try_map(lambda o: option_to_instrument(o, contract_size=contract_size), opt, out)
         return out
 
     # --- account ------------------------------------------------------------

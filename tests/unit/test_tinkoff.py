@@ -96,6 +96,41 @@ def test_future_to_instrument() -> None:
     assert inst.expiry == date(2026, 3, 20)
 
 
+def test_future_multiplier_and_quote_scale_from_basic_asset_size() -> None:
+    # FORTS stock future: quoted per contract (share x basic_asset_size) and its
+    # delta multiplier is basic_asset_size. Both come from basic_asset_size.
+    fut = SimpleNamespace(
+        figi="FUTSBRF09260",
+        basic_asset="SBER",
+        lot=1,
+        currency="rub",
+        basic_asset_size=_q(100, 0),
+        min_price_increment=_q(1, 0),
+        min_price_increment_amount=_q(1, 0),
+        expiration_date=datetime(2026, 9, 18, tzinfo=UTC),
+    )
+    inst = future_to_instrument(fut)
+    assert inst.spec.multiplier == Decimal("100")  # shares per contract (delta/hedge)
+    assert inst.spec.quote_scale == Decimal("100")  # quote is per-contract
+
+
+def test_option_contract_size_sets_multiplier() -> None:
+    base = {
+        "uid": "opt-uid",
+        "basic_asset": "SBER",
+        "lot": 1,
+        "currency": "rub",
+        "min_price_increment": _q(0, 10_000_000),
+        "expiration_date": datetime(2026, 7, 2, tzinfo=UTC),
+        "strike_price": _q(300, 0),
+        "direction": 2,
+    }
+    # 1 FORTS option is 1:1 with its future -> covers 100 shares.
+    inst = option_to_instrument(SimpleNamespace(**base), contract_size=Decimal("100"))
+    assert inst.spec.multiplier == Decimal("100")
+    assert inst.spec.quote_scale == Decimal("1")  # premium/strike are per-share
+
+
 def test_option_to_instrument_call_and_put() -> None:
     base = {
         "figi": "OPT-SBER-300-C",

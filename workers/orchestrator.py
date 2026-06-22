@@ -120,6 +120,9 @@ class Orchestrator:
         # The spot/forward reference symbol; finalized in run() once the straddle
         # is resolved (equity in equity mode, the future in options-on-futures mode).
         self._spot_symbol = config.symbol
+        # Quoted-price -> per-unit divisor; finalized in run() (1 unless the spot
+        # reference is a FORTS future quoted per contract).
+        self._spot_scale = 1.0
 
     @property
     def opened(self) -> bool:
@@ -139,8 +142,10 @@ class Orchestrator:
         strikes = resolver.strikes(sym, expiry)
         if self._cfg.options_on_futures:
             # The future is the spot/forward reference — anchor and quote off it.
-            spot_ref = resolver.nearest_future(sym, on_or_after=expiry).symbol
-            anchor = await self._spot_anchor(spot_ref, strikes)
+            future = resolver.nearest_future(sym, on_or_after=expiry)
+            # FORTS futures are quoted per contract (= per-unit x quote_scale); the
+            # strike grid is per-unit, so divide the quote down before matching.
+            anchor = await self._spot_anchor(future.symbol, strikes) / future.spec.quote_scale
             strike = min(strikes, key=lambda k: abs(k - anchor))
             straddle = resolver.resolve_straddle_on_future(sym, expiry=expiry, strike=strike)
         else:
@@ -150,6 +155,10 @@ class Orchestrator:
         # The spot/forward reference instrument (equity in equity mode, future in
         # options-on-futures mode). All spot reads and the MDS feed key off this.
         self._spot_symbol = straddle.underlying.symbol
+        # Quoted price -> per-underlying-unit price (1 for equities & per-unit
+        # futures; >1 for FORTS futures quoted per contract). The pricing kernel,
+        # strike selection and realized-vol all work in per-unit space.
+        self._spot_scale = float(straddle.underlying.spec.quote_scale)
         symbols = list(
             dict.fromkeys(
                 [
@@ -178,7 +187,9 @@ class Orchestrator:
 
     async def _tick(self, straddle: ResolvedStraddle, now: datetime, step: int) -> None:
         run_state = self._control.run_state
-        u_mid = self._mds.mid(self._spot_symbol)
+        raw_mid = self._mds.mid(self._spot_symbol)
+        # Convert the quoted price to per-underlying-unit (strikes/IV/forward space).
+        u_mid = raw_mid / Decimal(str(self._spot_scale)) if raw_mid is not None else None
         if u_mid is not None:
             self._underlying_mids.append(float(u_mid))
         if run_state is StrategyRunState.STOPPED or u_mid is None:
