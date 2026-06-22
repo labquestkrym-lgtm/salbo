@@ -15,7 +15,7 @@ Bounded by ``max_steps`` for tests / batch runs.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 
 from app.api.control import InMemoryControlPlane, StrategyRunState
@@ -29,10 +29,11 @@ from app.execution.straddle import StraddleExecutor
 from app.instruments import InstrumentResolver
 from app.instruments.resolver import ResolvedStraddle
 from app.market_data import MarketDataService
-from app.models import OrderRequest
+from app.models import Instrument, OrderRequest
 from app.notifications import NotificationService
 from app.observability import Metrics
 from app.portfolio import PortfolioGreeks, PortfolioGreeksEngine, PricingInputs, UnderlyingState
+from app.pricing import implied_volatility
 from app.risk import RiskManager, RiskState
 from app.strategies.atm import StrikeCandidate
 from app.strategies.long_straddle import (
@@ -243,6 +244,32 @@ class Orchestrator:
             return quote.mid
         return strikes[len(strikes) // 2]
 
+    def _leg_iv(self, leg: Instrument, forward: Decimal, now: datetime) -> float:
+        """Market implied vol for one option leg, backed out of its quote mid
+        (Black-76 for options-on-futures, BSM otherwise). Falls back to the
+        configured ``sigma`` if there is no quote or the solve fails — the whole
+        strategy compares forecast RV to *market* IV, so a constant is wrong."""
+        q = self._mds.get_quote(leg.symbol)
+        mid = q.mid if q is not None else None
+        if mid is None or mid <= 0 or leg.strike is None or leg.option_type is None:
+            return self._cfg.sigma
+        end = datetime.combine(leg.expiry, time(23, 59, 59), tzinfo=UTC) if leg.expiry else now
+        tau = max((end - now).total_seconds() / _YEAR_SECONDS, 1.0 / _YEAR_SECONDS)
+        try:
+            if self._cfg.options_on_futures:
+                return implied_volatility(
+                    price=float(mid), underlying=float(forward), strike=float(leg.strike),
+                    t=tau, rate=self._cfg.rate, option_type=leg.option_type, model="black76",
+                )
+            return implied_volatility(
+                price=float(mid), underlying=float(forward), strike=float(leg.strike), t=tau,
+                rate=self._cfg.rate, option_type=leg.option_type, model="bsm",
+                dividend_yield=self._cfg.dividend_yield,
+            )
+        except Exception as exc:  # noisy/illiquid quote -> use the configured fallback
+            logger.debug("iv_solve_failed", symbol=leg.symbol, error=str(exc))
+            return self._cfg.sigma
+
     async def _compute_greeks(
         self, straddle: ResolvedStraddle, now: datetime, u_mid: Decimal
     ) -> PortfolioGreeks:
@@ -254,8 +281,8 @@ class Orchestrator:
                 spot=float(u_mid), rate=self._cfg.rate, dividend_yield=self._cfg.dividend_yield
             ),
             sigma_by_symbol={
-                straddle.call.symbol: self._cfg.sigma,
-                straddle.put.symbol: self._cfg.sigma,
+                straddle.call.symbol: self._leg_iv(straddle.call, u_mid, now),
+                straddle.put.symbol: self._leg_iv(straddle.put, u_mid, now),
             },
             mid_by_symbol={},
             future_multiplier=float(straddle.future.spec.multiplier),
@@ -308,11 +335,17 @@ class Orchestrator:
             periods_per_year=_YEAR_SECONDS / self._cfg.dt_seconds,
         )
         candidate = StrikeCandidate(strike=straddle.strike, call_quote=call_q, put_quote=put_q)
+        # Compare the forecast against the MARKET IV (mean of the two legs), not a
+        # constant — the long-vol edge exists only when forecast RV > market IV.
+        market_iv = (
+            self._leg_iv(straddle.call, u_mid, self._clock.now())
+            + self._leg_iv(straddle.put, u_mid, self._clock.now())
+        ) / 2.0
         entry = self._strategy.evaluate_entry(
             spot=u_mid,
             candidates=[candidate],
             forecast=VolatilityForecast(expected_rv=rv),
-            implied_vol=self._cfg.sigma,
+            implied_vol=market_iv,
         )
         if not entry.enter or entry.selection is None:
             return

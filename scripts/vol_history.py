@@ -40,7 +40,9 @@ _RV_WIN = 21        # realized-vol window
 _RATE = 0.18
 # Frictions calibrated to observed GAZP quotes:
 _OPT_SPREAD = 0.04  # half-spread per option leg, as fraction of premium (entry & exit)
-_HEDGE_COST = 0.001  # per hedge rebalance, fraction of traded share notional
+_HEDGE_COST = 0.001  # continuous (share) hedge: fraction of traded notional per rebalance
+_FUT_COST = 0.0004  # futures hedge: tight spread + commission, fraction of traded notional
+_MULT = 100.0       # underlying units per future / per option contract (FORTS basic_asset_size)
 _ENTRY_STEP = 3     # start a new straddle every N trading days
 _IV_GRID = [0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
 
@@ -79,43 +81,57 @@ def _forecast_skill(px: np.ndarray) -> tuple[float, float, float]:
     return corr, float(fwd[hi].mean()), float(fwd.mean())
 
 
-def _straddle_net_pct(px: np.ndarray, start: int, iv: float) -> float | None:
-    """Net P&L of a daily delta-hedged long ATM straddle entered at `start`,
-    held _HOLD trading days, priced/hedged at constant `iv`, as a fraction of the
-    premium paid. Includes option entry/exit spread and per-rehedge cost."""
+def _straddle_net_pct(
+    px: np.ndarray, start: int, iv: float, *, hedge: str = "share", contracts: int = 1
+) -> float | None:
+    """Net P&L of a daily delta-hedged long ATM straddle entered at `start`, held
+    _HOLD trading days, priced/hedged at constant `iv`, as a fraction of premium.
+
+    hedge="share": continuous (fractional) hedge — the idealized case.
+    hedge="future": hedge in WHOLE futures (1 future = _MULT delta units), the
+    real FORTS case; on a small position the integer granularity leaves a large
+    residual delta. `contracts` = option contracts held (delta scales with it)."""
     if start + _HOLD >= len(px):
         return None
     s0 = float(px[start])
     k = s0
     c0 = bsm(spot=s0, strike=k, t=_HOLD / _TDAYS, rate=_RATE, sigma=iv, option_type=OptionType.CALL)
     p0 = bsm(spot=s0, strike=k, t=_HOLD / _TDAYS, rate=_RATE, sigma=iv, option_type=OptionType.PUT)
-    prem = c0.price + p0.price
+    prem = (c0.price + p0.price) * _MULT * contracts
     if prem <= 0:
         return None
-    cash = -prem - _OPT_SPREAD * prem        # buy straddle + entry half-spread
-    h_prev = 0.0
+    cash = -prem - _OPT_SPREAD * prem
+    h_prev = 0.0  # hedge size in underlying units (shares-equivalent)
     for d in range(_HOLD):
         s = float(px[start + d])
         tau = max((_HOLD - d) / _TDAYS, 1e-6)
-        delta = (
+        delta_units = (
             bsm(spot=s, strike=k, t=tau, rate=_RATE, sigma=iv, option_type=OptionType.CALL).delta
             + bsm(spot=s, strike=k, t=tau, rate=_RATE, sigma=iv, option_type=OptionType.PUT).delta
-        )
-        h = -delta                            # hedge shares to neutralize straddle delta
+        ) * _MULT * contracts
+        if hedge == "future":
+            contracts_fut = round(-delta_units / _MULT)  # whole futures only
+            h = contracts_fut * _MULT
+            fric = _FUT_COST
+        else:
+            h = -delta_units                              # continuous
+            fric = _HEDGE_COST
         trade = h - h_prev
-        cash -= trade * s                     # rebalance hedge
-        cash -= abs(trade) * s * _HEDGE_COST  # hedge friction
+        cash -= trade * s
+        cash -= abs(trade) * s * fric
         h_prev = h
     st = float(px[start + _HOLD])
-    intrinsic = abs(st - k)                   # straddle value at exit (~intrinsic)
-    cash += intrinsic - _OPT_SPREAD * prem    # sell straddle + exit half-spread
-    cash += h_prev * st                       # close hedge
-    cash -= abs(h_prev) * st * _HEDGE_COST
+    cash += abs(st - k) * _MULT * contracts - _OPT_SPREAD * prem  # close straddle at intrinsic
+    cash += h_prev * st
+    cash -= abs(h_prev) * st * (_FUT_COST if hedge == "future" else _HEDGE_COST)
     return cash / prem
 
 
-def _simulate(px: np.ndarray, iv: float) -> tuple[float, float, float]:
-    res = [_straddle_net_pct(px, i, iv) for i in range(_RV_WIN, len(px) - _HOLD, _ENTRY_STEP)]
+def _simulate(px: np.ndarray, iv: float, *, hedge: str = "share") -> tuple[float, float, float]:
+    res = [
+        _straddle_net_pct(px, i, iv, hedge=hedge)
+        for i in range(_RV_WIN, len(px) - _HOLD, _ENTRY_STEP)
+    ]
     arr = np.asarray([x for x in res if x is not None])
     if len(arr) == 0:
         return 0.0, 0.0, 0.0
@@ -143,20 +159,22 @@ async def main() -> None:
                   f"(skill of buying on high vol)")
             print(f"forward 30d RV when trailing in top quartile: {fwd_hi * 100:.1f}%  "
                   f"vs unconditional {fwd_mean * 100:.1f}%")
-            print(f"{'entry IV':>9}{'mean net %prem':>16}{'median':>10}{'win rate':>10}")
-            prev_mean = None
-            breakeven = None
-            for iv in _IV_GRID:
-                m, med, win = _simulate(px, iv)
-                print(f"{iv * 100:>8.0f}%{m * 100:>15.1f}%{med * 100:>9.1f}%{win * 100:>9.0f}%")
-                if prev_mean is not None and prev_mean >= 0 >= m and breakeven is None:
-                    # linear interp of the IV where mean net P&L crosses zero
-                    lo = _IV_GRID[_IV_GRID.index(iv) - 1]
-                    breakeven = lo + (iv - lo) * (prev_mean / (prev_mean - m))
-                prev_mean = m
-            if breakeven:
-                print(f"~break-even entry IV (mean P&L=0): {breakeven * 100:.0f}%  "
-                      f"-> profitable only if you buy BELOW this")
+            for hedge in ("share", "future"):
+                label = "continuous (ideal)" if hedge == "share" else "whole futures (1 lot, real)"
+                print(f"-- delta hedge: {label} --")
+                print(f"{'entry IV':>9}{'mean net %prem':>16}{'median':>10}{'win rate':>10}")
+                prev_mean = None
+                breakeven = None
+                for iv in _IV_GRID:
+                    m, med, win = _simulate(px, iv, hedge=hedge)
+                    print(f"{iv * 100:>8.0f}%{m * 100:>15.1f}%{med * 100:>9.1f}%{win * 100:>9.0f}%")
+                    if prev_mean is not None and prev_mean >= 0 >= m and breakeven is None:
+                        lo = _IV_GRID[_IV_GRID.index(iv) - 1]
+                        breakeven = lo + (iv - lo) * (prev_mean / (prev_mean - m))
+                    prev_mean = m
+                if breakeven:
+                    print(f"   ~break-even entry IV: {breakeven * 100:.0f}% "
+                          f"(profit only if you buy BELOW this; realized={rv_all * 100:.0f}%)")
 
 
 if __name__ == "__main__":

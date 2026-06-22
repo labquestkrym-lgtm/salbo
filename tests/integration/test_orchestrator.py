@@ -118,6 +118,26 @@ async def test_orchestrator_emits_notifications() -> None:
     assert {"symbol", "side", "contracts", "price"} <= set(hedge.fields)
 
 
+async def test_orchestrator_backs_out_market_iv_not_config() -> None:
+    # The agent must price/decide on the MARKET IV (solved from the option quote),
+    # not the configured fallback sigma. Mock prices options at 0.20; set the
+    # config sigma to 0.50 and confirm _leg_iv returns ~0.20, not 0.50.
+    from decimal import Decimal
+
+    orch, _, _ = _setup()
+    orch._cfg.sigma = 0.50
+    broker = orch._broker
+    await broker.connect()
+    exp = broker._cfg.expiry.strftime("%Y%m%d")
+    call = broker._instruments[f"XYZ-C-100-{exp}"]
+    orch._mds.on_quote(await broker.get_quote(call.symbol))
+    iv = orch._leg_iv(call, Decimal("100"), _NOW)
+    assert 0.17 < iv < 0.23  # recovered the mock's 0.20, not the 0.50 fallback
+    # No quote in the book -> falls back to the configured sigma.
+    missing = broker._instruments[f"XYZ-P-110-{exp}"]
+    assert orch._leg_iv(missing, Decimal("100"), _NOW) == 0.50
+
+
 def test_select_expiry_picks_nearest_in_window() -> None:
     orch, _, _ = _setup()
     orch._cfg.min_days_to_expiry = 10
