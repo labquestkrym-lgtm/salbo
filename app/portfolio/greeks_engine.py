@@ -26,10 +26,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, time
 from decimal import Decimal
 
-from app.core.enums import AssetClass
+from app.core.enums import AssetClass, PricingModel
 from app.core.exceptions import PricingError
 from app.models import Instrument, Position
-from app.pricing import bsm
+from app.pricing import black76, bsm
 
 _YEAR_SECONDS = 365.0 * 24 * 3600
 
@@ -108,15 +108,26 @@ class PortfolioGreeksEngine:
                     raise PricingError(f"missing IV for option {pos.instrument_symbol}")
                 assert inst.strike is not None and inst.option_type is not None
                 tau = _tau_years(_expiry_dt(inst), now)
-                g = bsm(
-                    spot=u.spot,
-                    strike=float(inst.strike),
-                    t=tau,
-                    rate=u.rate,
-                    sigma=sigma,
-                    option_type=inst.option_type,
-                    dividend_yield=u.dividend_yield,
-                )
+                if inst.pricing_model is PricingModel.BLACK_76:
+                    # Options on a future: u.spot is the future (forward) price.
+                    g = black76(
+                        forward=u.spot,
+                        strike=float(inst.strike),
+                        t=tau,
+                        rate=u.rate,
+                        sigma=sigma,
+                        option_type=inst.option_type,
+                    )
+                else:
+                    g = bsm(
+                        spot=u.spot,
+                        strike=float(inst.strike),
+                        t=tau,
+                        rate=u.rate,
+                        sigma=sigma,
+                        option_type=inst.option_type,
+                        dividend_yield=u.dividend_yield,
+                    )
                 delta_units += g.delta * mult * qty
                 gamma_units += g.gamma * mult * qty
                 theta_day += g.theta_per_day * mult * qty

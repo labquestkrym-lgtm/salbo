@@ -5,8 +5,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
+
 from app.brokers.mock import MockBrokerAdapter, MockMarketConfig
 from app.core.clock import SimulatedClock
+from app.core.enums import AssetClass
 from app.models import Position
 from app.portfolio import PortfolioGreeksEngine, PricingInputs, UnderlyingState
 
@@ -63,6 +66,47 @@ def test_futures_position_contributes_delta_only() -> None:
     assert g.net_gamma_units == 0
     assert g.net_vega_per_pct == Decimal("0")
     assert g.futures_equivalent_delta < 0
+
+
+def test_option_on_future_priced_with_black76_not_bsm() -> None:
+    # A BLACK_76 option's portfolio delta must equal the Black-76 delta (scaled),
+    # not the BSM delta — the engine selects the model by pricing_model.
+    from datetime import date
+
+    from app.core.enums import OptionStyle, OptionType, PricingModel
+    from app.models import ContractSpec, Instrument
+    from app.pricing import black76, bsm
+
+    expiry = date(2026, 2, 4)
+    spec = ContractSpec(
+        tick_size=Decimal("0.01"), tick_value=Decimal("1"), lot_size=1,
+        multiplier=Decimal("10"), currency="RUB",
+    )
+    opt = Instrument(
+        symbol="FUT-C-100", underlying_symbol="FUT", asset_class=AssetClass.OPTION, spec=spec,
+        expiry=expiry, option_type=OptionType.CALL, strike=Decimal("100"),
+        option_style=OptionStyle.EUROPEAN, pricing_model=PricingModel.BLACK_76,
+    )
+    engine = PortfolioGreeksEngine({opt.symbol: opt})
+    valuation = datetime(2026, 1, 5, tzinfo=UTC)
+    inputs = PricingInputs(
+        valuation_time=valuation,
+        underlying=UnderlyingState(spot=100.0, rate=0.05),  # spot == future price
+        sigma_by_symbol={opt.symbol: 0.25},
+        mid_by_symbol={},
+        future_multiplier=10.0,
+    )
+    g = engine.compute([Position(instrument_symbol=opt.symbol, quantity=Decimal("1"))], inputs)
+
+    tau = (datetime(2026, 2, 4, 23, 59, 59, tzinfo=UTC) - valuation).total_seconds() / (
+        365 * 24 * 3600
+    )
+    b76 = black76(forward=100.0, strike=100.0, t=tau, rate=0.05, sigma=0.25,
+                  option_type=OptionType.CALL)
+    bsm_g = bsm(spot=100.0, strike=100.0, t=tau, rate=0.05, sigma=0.25,
+                option_type=OptionType.CALL)
+    assert g.net_delta_units == pytest.approx(b76.delta * 10.0, rel=1e-9)
+    assert g.net_delta_units != pytest.approx(bsm_g.delta * 10.0, rel=1e-6)  # truly Black-76
 
 
 def test_straddle_plus_hedge_reduces_net_delta() -> None:
