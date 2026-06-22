@@ -17,6 +17,7 @@ Places NO orders. After verifying, close the position manually in the app.
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -55,7 +56,7 @@ async def _load_chain(a: BaseBrokerAdapter, sym: str, retries: int = 4) -> list[
 
 async def main() -> None:
     configure_logging(json_output=False)
-    settings = load_settings()
+    settings = load_settings(os.environ.get("CONFIG_PATH", "configs/production.yaml"))
     sym = settings.params.strategy.symbol
     a = TInvestBrokerAdapter(settings, SystemClock(), sandbox=False)
     await a.connect()
