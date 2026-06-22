@@ -22,6 +22,7 @@ means real entry IV sits ABOVE realized — read the break-even accordingly.
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import UTC, datetime, timedelta
 
 import numpy as np
@@ -39,7 +40,9 @@ _HOLD = 21          # trading days held (~1 month option)
 _RV_WIN = 21        # realized-vol window
 _RATE = 0.18
 # Frictions calibrated to observed GAZP quotes:
-_OPT_SPREAD = 0.04  # half-spread per option leg, as fraction of premium (entry & exit)
+# Half-spread per option leg as a fraction of premium (entry & exit). ~0.04 = crossing
+# an 8% book aggressively; ~0.005 = passive limit fills near mid. Override via OPT_SPREAD.
+_OPT_SPREAD = float(os.environ.get("OPT_SPREAD", "0.04"))
 _HEDGE_COST = 0.001  # continuous (share) hedge: fraction of traded notional per rebalance
 _FUT_COST = 0.0004  # futures hedge: tight spread + commission, fraction of traded notional
 _MULT = 100.0       # underlying units per future / per option contract (FORTS basic_asset_size)
