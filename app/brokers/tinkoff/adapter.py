@@ -402,6 +402,12 @@ class TInvestBrokerAdapter(BaseBrokerAdapter):
             out.append(Position(instrument_symbol=str(s.figi), quantity=Decimal(s.balance)))
         for f in getattr(res, "futures", []):
             out.append(Position(instrument_symbol=str(f.figi), quantity=Decimal(f.balance)))
+        # FORTS options sit in their own `options` bucket and have no figi — they
+        # are keyed by instrument_uid (which is our Instrument.symbol for options).
+        for o in getattr(res, "options", []):
+            out.append(
+                Position(instrument_symbol=str(o.instrument_uid), quantity=Decimal(o.balance))
+            )
         return out
 
     async def get_cash(self) -> list[CashBalance]:

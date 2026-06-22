@@ -380,6 +380,29 @@ def test_get_margin_maps_attributes() -> None:
     assert m.currency == "RUB"
 
 
+def test_get_positions_includes_forts_options() -> None:
+    # FORTS option positions live in res.options (no figi) keyed by instrument_uid,
+    # alongside securities/futures — all three buckets must be mapped.
+    import asyncio
+
+    res = SimpleNamespace(
+        securities=[SimpleNamespace(figi="SH", balance=10)],
+        futures=[SimpleNamespace(figi="FUT", balance=-2)],
+        options=[SimpleNamespace(instrument_uid="opt-uid", balance=1)],
+        money=[],
+    )
+    client = SimpleNamespace(operations=SimpleNamespace(get_positions=_AsyncReturn(res)))
+    adapter = TInvestBrokerAdapter(
+        _settings(app_environment=Environment.PRODUCTION),
+        SimulatedClock(_NOW),
+        sandbox=False,
+        account_id="acc",
+    )
+    adapter._client = client  # type: ignore[attr-defined]
+    positions = {p.instrument_symbol: p.quantity for p in asyncio.run(adapter.get_positions())}
+    assert positions == {"SH": Decimal("10"), "FUT": Decimal("-2"), "opt-uid": Decimal("1")}
+
+
 def test_get_margin_unavailable_on_sandbox() -> None:
     import asyncio
 
