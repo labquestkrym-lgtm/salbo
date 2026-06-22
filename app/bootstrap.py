@@ -5,8 +5,11 @@ the orchestration worker, then exposes a FastAPI app whose lifespan optionally
 runs the orchestrator as a supervised background task. This is the single
 in-process entry point (``uvicorn app.bootstrap:asgi --factory``).
 
-Only the Mock broker is wired here; paper/sandbox/real adapters slot in by broker
-name once their data feeds are configured. Live trading stays gated (ADR-0003).
+The broker is selected by ``BROKER_NAME`` (mock | tinkoff). The orchestration
+loop is auto-started only for brokers whose data feed + instrument universe are
+wired for the straddle strategy (currently the mock); other brokers still serve
+the control plane (positions/quotes) against their endpoint. Live trading stays
+gated (ADR-0003).
 """
 
 from __future__ import annotations
@@ -22,9 +25,10 @@ from fastapi import FastAPI
 from app.api.app import create_app
 from app.api.audit import InMemoryAuditSink
 from app.api.control import InMemoryControlPlane
+from app.brokers.base import BaseBrokerAdapter
 from app.brokers.mock import MockBrokerAdapter, MockMarketConfig
 from app.config.settings import AppSettings, load_settings
-from app.core.clock import SystemClock
+from app.core.clock import Clock, SystemClock
 from app.core.logging import get_logger
 from app.notifications import (
     EmailChannel,
@@ -38,6 +42,20 @@ from app.risk import KillSwitch, RiskManager
 from workers import Orchestrator, OrchestratorConfig
 
 logger = get_logger(__name__)
+
+
+def _build_broker(settings: AppSettings, clock: Clock) -> tuple[BaseBrokerAdapter, bool]:
+    """Return ``(broker, can_run_strategy)``. The second flag marks whether the
+    orchestration loop can drive this broker today (mock has a streaming feed +
+    full option universe; the T-Invest sandbox needs option-by-underlying +
+    streaming wired first, so it serves the control plane only)."""
+    name = settings.broker_name.lower()
+    if name == "tinkoff":
+        from app.brokers.tinkoff import TInvestBrokerAdapter
+
+        sandbox = not settings.is_live_trading_allowed()
+        return TInvestBrokerAdapter(settings, clock, sandbox=sandbox), False
+    return MockBrokerAdapter(clock, MockMarketConfig()), True
 
 
 @dataclass(slots=True)
@@ -59,7 +77,7 @@ def build_application(
 ) -> Application:
     settings = settings or load_settings()
     clock = SystemClock()
-    broker = MockBrokerAdapter(clock, MockMarketConfig())
+    broker, can_run_strategy = _build_broker(settings, clock)
     kill_switch = KillSwitch(clock, policy=settings.params.risk.kill_switch_policy)
     risk = RiskManager(settings.params.risk, kill_switch)
     control = InMemoryControlPlane(settings, broker, risk)
@@ -85,9 +103,15 @@ def build_application(
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         task: asyncio.Task[None] | None = None
-        if autostart_orchestrator:
-            logger.info("orchestrator_autostart")
+        if autostart_orchestrator and can_run_strategy:
+            logger.info("orchestrator_autostart", broker=settings.broker_name)
             task = asyncio.create_task(orchestrator.run())
+        elif autostart_orchestrator:
+            logger.warning(
+                "orchestrator_autostart_skipped",
+                broker=settings.broker_name,
+                reason="strategy loop not wired for this broker",
+            )
         try:
             yield
         finally:

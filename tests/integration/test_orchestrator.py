@@ -38,7 +38,7 @@ def _setup(*, vol: float = 0.50):
         broker,
         risk,
         control,
-        OrchestratorConfig(max_steps=120, lookback=30),
+        OrchestratorConfig(max_steps=120, lookback=30, dt_seconds=3600.0),
         metrics=metrics,
     )
     return orch, control, metrics
@@ -104,7 +104,7 @@ async def test_orchestrator_emits_notifications() -> None:
         broker,
         RiskManager(RiskConfig(), KillSwitch(clock)),
         control,
-        OrchestratorConfig(max_steps=120, lookback=30),
+        OrchestratorConfig(max_steps=120, lookback=30, dt_seconds=3600.0),
         notifier=NotificationService([channel]),
     )
     await control.start(confirmation_code=None)
@@ -145,7 +145,9 @@ async def test_orchestrator_notifies_on_position_close() -> None:
         broker,
         RiskManager(RiskConfig(), KillSwitch(clock)),
         control,
-        OrchestratorConfig(max_steps=120, lookback=30, exit_min_days_to_expiry=999),
+        OrchestratorConfig(
+            max_steps=120, lookback=30, dt_seconds=3600.0, exit_min_days_to_expiry=999
+        ),
         notifier=NotificationService([channel]),
     )
     await control.start(confirmation_code=None)

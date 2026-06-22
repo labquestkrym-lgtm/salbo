@@ -19,7 +19,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from app.api.control import InMemoryControlPlane, StrategyRunState
-from app.brokers.mock import MockBrokerAdapter
+from app.brokers.base import BaseBrokerAdapter
 from app.core.clock import Clock
 from app.core.enums import OrderType, Side
 from app.core.exceptions import RiskLimitBreachError
@@ -52,6 +52,9 @@ class OrchestratorConfig:
     rate: float = 0.05
     dividend_yield: float = 0.0
     sigma: float = 0.20
+    # Feed cadence in seconds; MUST match the market-data interval so realized
+    # volatility is annualized correctly (and staleness is judged sanely).
+    dt_seconds: float = 1.0
     lookback: int = 30
     entry_contracts: int = 5
     exit_min_days_to_expiry: int = 0
@@ -68,7 +71,7 @@ class Orchestrator:
     def __init__(
         self,
         clock: Clock,
-        broker: MockBrokerAdapter,
+        broker: BaseBrokerAdapter,
         risk_manager: RiskManager,
         control: InMemoryControlPlane,
         config: OrchestratorConfig,
@@ -83,11 +86,11 @@ class Orchestrator:
         self._cfg = config
         self._metrics = metrics
         self._notifier = notifier
-        dt = broker._cfg.dt_seconds
-        self._mds = MarketDataService(clock=clock, max_age_seconds=dt * 5)
+        self._mds = MarketDataService(clock=clock, max_age_seconds=config.dt_seconds * 5)
         self._oms = OrderManager(broker, InMemoryOrderStore(), clock)
         self._executor = StraddleExecutor(self._oms)
-        self._greeks = PortfolioGreeksEngine(broker._instruments)
+        # Built in run() from the broker's public instrument list (no internals).
+        self._greeks: PortfolioGreeksEngine | None = None
         self._hedger = HedgeEngine(
             HedgeBandConfig(
                 base_trigger_units=config.base_trigger_units,
@@ -117,11 +120,14 @@ class Orchestrator:
 
     async def run(self) -> None:
         await self._broker.connect()
-        resolver = InstrumentResolver(list(self._broker._instruments.values()))
         sym = self._cfg.symbol
+        instruments = await self._broker.list_instruments(sym)
+        self._greeks = PortfolioGreeksEngine({i.symbol: i for i in instruments})
+        resolver = InstrumentResolver(instruments)
         expiry = resolver.expiries(sym)[0]
-        spot0 = Decimal(str(self._broker._cfg.spot0))
-        strike = min(resolver.strikes(sym, expiry), key=lambda k: abs(k - spot0))
+        strikes = resolver.strikes(sym, expiry)
+        anchor = await self._spot_anchor(sym, strikes)
+        strike = min(strikes, key=lambda k: abs(k - anchor))
         straddle = resolver.resolve_straddle(sym, expiry=expiry, strike=strike)
         symbols = [sym, straddle.future.symbol, straddle.call.symbol, straddle.put.symbol]
         if self._notifier is not None:
@@ -164,9 +170,18 @@ class Orchestrator:
         if self._opened and not tripped:
             await self._maybe_hedge(straddle, now, u_mid, step)
 
+    async def _spot_anchor(self, symbol: str, strikes: list[Decimal]) -> Decimal:
+        """Anchor for ATM strike selection: the underlying's current mid, or the
+        median strike if the underlying isn't directly quotable."""
+        quote = await self._broker.get_quote(symbol)
+        if quote.mid is not None:
+            return quote.mid
+        return strikes[len(strikes) // 2]
+
     async def _compute_greeks(
         self, straddle: ResolvedStraddle, now: datetime, u_mid: Decimal
     ) -> PortfolioGreeks:
+        assert self._greeks is not None  # built in run() before any tick
         positions = await self._broker.get_positions()
         inputs = PricingInputs(
             valuation_time=now,
@@ -225,7 +240,7 @@ class Orchestrator:
             return
         rv = realized_vol(
             self._underlying_mids[-self._cfg.lookback :],
-            periods_per_year=_YEAR_SECONDS / self._broker._cfg.dt_seconds,
+            periods_per_year=_YEAR_SECONDS / self._cfg.dt_seconds,
         )
         candidate = StrikeCandidate(strike=straddle.strike, call_quote=call_q, put_quote=put_q)
         entry = self._strategy.evaluate_entry(
