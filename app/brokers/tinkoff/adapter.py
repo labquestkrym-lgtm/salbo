@@ -10,12 +10,13 @@ version before pointing at sandbox. Safety guards (ADR-0003): a non-sandbox
 endpoint is refused in development/test, and order methods require all
 live-trading gates unless on sandbox.
 
-Verified live against the sandbox: connect, account open/fund, positions/cash,
-futures listing, order-book quotes, and **streaming** (order-book subscription).
-``option_chain`` uses ``options_by`` (the full ``options()`` dump is unreliable
-on the sandbox). Orders, margin, open-orders and fills are mapped against the
-documented SDK shapes but UNVERIFIED on the network (margin is live-only); the
-trading-schedule remains a static placeholder until validated.
+Verified live (sandbox + prod): connect, accounts, positions/cash, futures
+listing, order-book quotes, streaming, and the option-chain assembly —
+``options_by`` keyed by the basic *asset* uid resolved from the future's
+``basic_asset_position_uid`` (the full ``options()`` dump is deprecated and
+errors with "Stream removed"). Orders, margin, open-orders and fills are mapped
+against the documented SDK shapes but UNVERIFIED on the network (margin is
+live-only); the trading-schedule remains a static placeholder until validated.
 """
 
 from __future__ import annotations
@@ -56,6 +57,7 @@ logger = get_logger(__name__)
 
 _ORDER_TYPE_LIMIT = 1
 _ORDER_TYPE_MARKET = 2
+_ID_TYPE_POSITION_UID = 4  # InstrumentIdType.INSTRUMENT_ID_TYPE_POSITION_UID (protobuf accepts int)
 _FILLS_LOOKBACK_DAYS = 1  # how far back get_fills scans operations (no int cursor in T-Invest)
 
 
@@ -259,22 +261,49 @@ class TInvestBrokerAdapter(BaseBrokerAdapter):
     async def _option_chain_for_future(self, fut: Any, underlying_symbol: str) -> list[Instrument]:
         """Resolve the option chain for ``fut``'s underlying via ``options_by``.
 
-        ``options_by`` needs the basic *asset* uid — NOT the future's
-        ``uid``/``position_uid`` (those raise INVALID_ARGUMENT). VALIDATE the
-        field name and that the call returns the chain against your live
-        universe; the sandbox exposes no options, so this path is unverified on
-        the network. Degrades to an empty list on any failure (caller falls back
-        to the full dump)."""
-        asset_uid = getattr(fut, "basic_asset_uid", None) or getattr(fut, "asset_uid", None)
-        if not asset_uid:
-            logger.warning("future_missing_basic_asset_uid", underlying=underlying_symbol)
+        VERIFIED on the live prod API (SBER): ``options_by`` is keyed by the
+        basic *asset* uid (e.g. the SBER share's ``asset_uid``), NOT the future's
+        own ``uid``/``position_uid`` (those return 0). The future links to its
+        basic asset via ``basic_asset_position_uid`` (== the share's
+        ``position_uid``); see :meth:`_basic_asset_uid`. Degrades to an empty list
+        on any failure (caller falls back to the full dump)."""
+        asset_uid = await self._basic_asset_uid(fut, underlying_symbol)
+        if asset_uid is None:
             return []
         try:
-            chain = await self.option_chain(str(asset_uid))
+            chain = await self.option_chain(asset_uid)
         except Exception as exc:  # one underlying's chain unavailable must not abort
             logger.warning("option_chain_failed", underlying=underlying_symbol, error=str(exc))
             return []
         return [o for o in chain if o.underlying_symbol == underlying_symbol]
+
+    async def _basic_asset_uid(self, fut: Any, underlying_symbol: str) -> str | None:
+        """The underlying-asset uid that ``options_by`` expects.
+
+        Prefer the future's own ``asset_uid``/``basic_asset_uid`` if present;
+        otherwise resolve it from ``basic_asset_position_uid`` via
+        ``get_instrument_by(POSITION_UID)`` — on FORTS the future carries the
+        basic asset's *position* uid, and the option chain is keyed by that
+        asset's ``asset_uid``."""
+        direct = getattr(fut, "asset_uid", None) or getattr(fut, "basic_asset_uid", None)
+        if direct:
+            return str(direct)
+        position_uid = getattr(fut, "basic_asset_position_uid", None)
+        if not position_uid:
+            logger.warning("future_missing_basic_asset_link", underlying=underlying_symbol)
+            return None
+        try:
+            resp = await self._svc().instruments.get_instrument_by(
+                id_type=_ID_TYPE_POSITION_UID,  # protobuf enum field accepts the int
+                id=str(position_uid),
+            )
+        except Exception as exc:  # basic-asset lookup unavailable -> no chain
+            logger.warning(
+                "basic_asset_lookup_failed", underlying=underlying_symbol, error=str(exc)
+            )
+            return None
+        asset_uid = getattr(resp.instrument, "asset_uid", None)
+        return str(asset_uid) if asset_uid else None
 
     async def get_contract_spec(self, symbol: str) -> ContractSpec:
         for inst in await self.list_instruments():

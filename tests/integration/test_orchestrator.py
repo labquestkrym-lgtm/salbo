@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from app.api.control import InMemoryControlPlane
 from app.brokers.mock import MockBrokerAdapter, MockMarketConfig
@@ -116,6 +116,23 @@ async def test_orchestrator_emits_notifications() -> None:
     # The hedge notification now carries explicit trade text (symbol/side/price).
     hedge = next(n for n in channel.sent if n.event == "hedged")
     assert {"symbol", "side", "contracts", "price"} <= set(hedge.fields)
+
+
+def test_select_expiry_picks_nearest_in_window() -> None:
+    orch, _, _ = _setup()
+    orch._cfg.min_days_to_expiry = 10
+    orch._cfg.max_days_to_expiry = 45
+    # _NOW = 2026-01-05: +3 (too near), +20 (pick), +40, +177 (too far).
+    expiries = [date(2026, 1, 8), date(2026, 1, 25), date(2026, 2, 14), date(2026, 7, 1)]
+    assert orch._select_expiry(expiries) == date(2026, 1, 25)
+
+
+def test_select_expiry_falls_back_to_earliest_when_none_in_window() -> None:
+    orch, _, _ = _setup()
+    orch._cfg.min_days_to_expiry = 10
+    orch._cfg.max_days_to_expiry = 45
+    expiries = [date(2026, 1, 8), date(2026, 12, 1)]  # +3 and +330: none inside window
+    assert orch._select_expiry(expiries) == date(2026, 1, 8)
 
 
 async def test_orchestrator_options_on_futures_opens_hedges_and_notifies() -> None:

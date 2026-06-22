@@ -72,6 +72,8 @@ def _orchestrator_config(settings: AppSettings) -> OrchestratorConfig:
             options_on_futures=True,
             entry_contracts=strategy.contracts,
             hedge_to_zero=strategy.hedge_to_zero,
+            min_days_to_expiry=strategy.min_days_to_expiry,
+            max_days_to_expiry=strategy.max_days_to_expiry,
         )
     return OrchestratorConfig()
 

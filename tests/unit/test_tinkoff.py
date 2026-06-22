@@ -116,6 +116,24 @@ def test_option_to_instrument_call_and_put() -> None:
     assert call.spec.multiplier == Decimal("1")
 
 
+def test_option_without_figi_uses_uid_as_symbol() -> None:
+    # FORTS options carry no figi (verified on the live API) — only a uid. The
+    # mapper must use uid as the instrument symbol (used for quotes/stream/orders).
+    opt = SimpleNamespace(
+        uid="41b6af39-1eab-4239-99e4-86a18b972931",
+        basic_asset="SBER",
+        lot=1,
+        currency="rub",
+        min_price_increment=_q(0, 10_000_000),
+        expiration_date=datetime(2026, 6, 25, tzinfo=UTC),
+        strike_price=_q(380, 0),
+        direction=2,
+    )
+    inst = option_to_instrument(opt)  # has no .figi attribute at all
+    assert inst.symbol == "41b6af39-1eab-4239-99e4-86a18b972931"
+    assert inst.asset_class is AssetClass.OPTION
+
+
 def test_unknown_option_direction_raises() -> None:
     opt = SimpleNamespace(
         figi="X",
@@ -133,9 +151,13 @@ def test_unknown_option_direction_raises() -> None:
 
 # --- instrument-universe assembly (fake client, no network) ----------------
 class _FakeInstruments:
-    def __init__(self, futures: list, options: list, chain: list) -> None:
+    def __init__(
+        self, futures: list, options: list, chain: list, *, asset_uid: str | None = None
+    ) -> None:
         self._futures, self._options, self._chain = futures, options, chain
+        self._asset_uid = asset_uid  # returned by get_instrument_by(POSITION_UID)
         self.seen_uid: str | None = None
+        self.seen_position_uid: str | None = None
 
     async def futures(self) -> SimpleNamespace:
         return SimpleNamespace(instruments=self._futures)
@@ -146,6 +168,10 @@ class _FakeInstruments:
     async def options_by(self, basic_asset_uid: str) -> SimpleNamespace:
         self.seen_uid = basic_asset_uid
         return SimpleNamespace(instruments=self._chain)
+
+    async def get_instrument_by(self, id_type: int, id: str) -> SimpleNamespace:
+        self.seen_position_uid = id
+        return SimpleNamespace(instrument=SimpleNamespace(asset_uid=self._asset_uid))
 
 
 class _FakeClient:
@@ -199,6 +225,25 @@ def test_list_instruments_assembles_chain_via_options_by() -> None:
     assert straddle.put.pricing_model is PricingModel.BLACK_76
     # The chain was fetched via options_by keyed off the future's basic-asset uid.
     assert fake.instruments.seen_uid == "asset-uid-1"
+
+
+def test_list_instruments_resolves_chain_via_position_uid() -> None:
+    # FORTS prod path: the future has NO asset_uid, only basic_asset_position_uid.
+    # The adapter resolves the basic asset (share) via get_instrument_by(POSITION_UID)
+    # and keys options_by off its asset_uid.
+    import asyncio
+
+    fut = _fut(uid=None)
+    fut.basic_asset_position_uid = "pos-uid-share"
+    chain = [_opt("OPT-C", 2), _opt("OPT-P", 1)]
+    instruments = _FakeInstruments([fut], [], chain, asset_uid="share-asset-uid")
+    adapter = TInvestBrokerAdapter(AppSettings(), SimulatedClock(_NOW), sandbox=True)
+    adapter._client = _FakeClient(instruments)  # type: ignore[attr-defined]
+    insts = asyncio.run(adapter.list_instruments("SBER"))
+    opts = [i for i in insts if i.asset_class is AssetClass.OPTION]
+    assert len(opts) == 2
+    assert instruments.seen_position_uid == "pos-uid-share"  # resolved via the future link
+    assert instruments.seen_uid == "share-asset-uid"  # options_by keyed off the asset uid
 
 
 def test_list_instruments_falls_back_to_dump_without_asset_uid() -> None:

@@ -15,14 +15,14 @@ Bounded by ``max_steps`` for tests / batch runs.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from app.api.control import InMemoryControlPlane, StrategyRunState
 from app.brokers.base import BaseBrokerAdapter
 from app.core.clock import Clock
 from app.core.enums import OrderType, Side
-from app.core.exceptions import RiskLimitBreachError
+from app.core.exceptions import InstrumentResolutionError, RiskLimitBreachError
 from app.core.logging import get_logger
 from app.execution import HedgeBandConfig, HedgeEngine, InMemoryOrderStore, OrderManager
 from app.execution.straddle import StraddleExecutor
@@ -58,6 +58,11 @@ class OrchestratorConfig:
     # FORTS-style options on the future (Black-76, future as spot/forward) vs
     # equity options (BSM, equity as spot).
     options_on_futures: bool = False
+    # Expiry-selection window (days to expiry). The nearest expiry INSIDE this
+    # window is chosen; defaults are permissive so single-expiry mock runs are
+    # unaffected. Real runs narrow this to avoid near-dated gamma/theta blowups.
+    min_days_to_expiry: int = 0
+    max_days_to_expiry: int = 3650
     lookback: int = 30
     entry_contracts: int = 5
     exit_min_days_to_expiry: int = 0
@@ -130,7 +135,7 @@ class Orchestrator:
         instruments = await self._broker.list_instruments(sym)
         self._greeks = PortfolioGreeksEngine({i.symbol: i for i in instruments})
         resolver = InstrumentResolver(instruments)
-        expiry = resolver.expiries(sym)[0]
+        expiry = self._select_expiry(resolver.expiries(sym))
         strikes = resolver.strikes(sym, expiry)
         if self._cfg.options_on_futures:
             # The future is the spot/forward reference — anchor and quote off it.
@@ -194,6 +199,30 @@ class Orchestrator:
             await self._maybe_exit(straddle, now, step)
         if self._opened and not tripped:
             await self._maybe_hedge(straddle, now, u_mid, step)
+
+    def _select_expiry(self, expiries: list[date]) -> date:
+        """The nearest expiry within [min_days_to_expiry, max_days_to_expiry].
+
+        Falls back to the earliest available expiry (with a warning) if none fall
+        inside the window — better to trade a slightly off-window expiry than to
+        stall, and the strategy's own entry filters still apply."""
+        if not expiries:
+            raise InstrumentResolutionError("no option expiries available for the underlying")
+        today = self._clock.now().date()
+        windowed = [
+            e
+            for e in expiries
+            if self._cfg.min_days_to_expiry <= (e - today).days <= self._cfg.max_days_to_expiry
+        ]
+        if windowed:
+            return min(windowed)
+        logger.warning(
+            "no_expiry_in_window",
+            min_dte=self._cfg.min_days_to_expiry,
+            max_dte=self._cfg.max_days_to_expiry,
+            fallback=str(expiries[0]),
+        )
+        return expiries[0]
 
     async def _spot_anchor(self, symbol: str, strikes: list[Decimal]) -> Decimal:
         """Anchor for ATM strike selection: the underlying's current mid, or the

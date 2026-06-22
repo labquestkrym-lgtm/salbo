@@ -25,6 +25,19 @@ from app.models import ContractSpec, Instrument
 _OPTION_DIRECTION: dict[int, OptionType] = {1: OptionType.PUT, 2: OptionType.CALL}
 
 
+def _instrument_id(obj: Any) -> str:
+    """The id used as our ``Instrument.symbol`` (and for quotes/stream/orders).
+
+    Futures carry a ``figi``; FORTS options do NOT — they only have a ``uid``
+    (verified on the live API). Both are accepted as ``instrument_id`` by the
+    market-data and orders services, so we prefer ``figi`` and fall back to
+    ``uid``."""
+    ident = getattr(obj, "figi", None) or getattr(obj, "uid", None)
+    if not ident:
+        raise InstrumentResolutionError("instrument has neither figi nor uid")
+    return str(ident)
+
+
 def contract_spec_from(obj: Any) -> ContractSpec:
     tick_size = quotation_obj_to_decimal(obj.min_price_increment)
     if tick_size <= 0:
@@ -47,7 +60,7 @@ def contract_spec_from(obj: Any) -> ContractSpec:
 
 def future_to_instrument(fut: Any) -> Instrument:
     return Instrument(
-        symbol=str(fut.figi),
+        symbol=_instrument_id(fut),
         underlying_symbol=str(fut.basic_asset),
         asset_class=AssetClass.FUTURE,
         spec=contract_spec_from(fut),
@@ -60,7 +73,7 @@ def option_to_instrument(opt: Any) -> Instrument:
     if option_type is None:
         raise InstrumentResolutionError(f"unknown option direction {opt.direction}")
     return Instrument(
-        symbol=str(opt.figi),
+        symbol=_instrument_id(opt),
         underlying_symbol=str(opt.basic_asset),
         asset_class=AssetClass.OPTION,
         spec=contract_spec_from(opt),
