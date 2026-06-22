@@ -134,6 +134,34 @@ class TInvestBrokerAdapter(BaseBrokerAdapter):
     async def is_connected(self) -> bool:
         return self._client is not None
 
+    # --- sandbox account management (sandbox only) -------------------------
+    async def open_sandbox_account(self) -> str:
+        """Open a fresh sandbox account and select it. Sandbox only."""
+        if not self._sandbox:
+            raise BrokerError("open_sandbox_account is only valid on the sandbox endpoint")
+        resp = await self._svc().sandbox.open_sandbox_account()
+        self._account_id = str(resp.account_id)
+        logger.info("tinkoff_sandbox_account_opened", account_id=self._account_id)
+        return self._account_id
+
+    async def get_sandbox_accounts(self) -> list[str]:
+        if not self._sandbox:
+            raise BrokerError("get_sandbox_accounts is only valid on the sandbox endpoint")
+        resp = await self._svc().sandbox.get_sandbox_accounts()
+        return [str(a.id) for a in resp.accounts]
+
+    async def sandbox_pay_in(self, amount: Decimal, *, currency: str = "rub") -> None:
+        """Top up the selected sandbox account with virtual money. Sandbox only."""
+        if not self._sandbox:
+            raise BrokerError("sandbox_pay_in is only valid on the sandbox endpoint")
+        if self._account_id is None:
+            raise BrokerError("no sandbox account selected; call open_sandbox_account first")
+        ti = _load_sdk()
+        units, nano = decimal_to_quotation(amount)
+        money = ti.MoneyValue(currency=currency, units=units, nano=nano)
+        await self._svc().sandbox.sandbox_pay_in(account_id=self._account_id, amount=money)
+        logger.info("tinkoff_sandbox_pay_in", amount=str(amount), currency=currency)
+
     # --- reference data -----------------------------------------------------
     async def list_instruments(self, underlying_symbol: str | None = None) -> list[Instrument]:
         svc = self._svc()

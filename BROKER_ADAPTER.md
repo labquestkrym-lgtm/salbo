@@ -41,6 +41,25 @@ Concrete adapter for the T-Invest (T-Bank / Tinkoff Investments) gRPC API.
   **sandbox** first. Streaming / fills / margin / trading-schedule are left as
   explicit `NotImplementedError` until validated.
 
+### Connecting to the sandbox
+The SDK (`tinkoff-investments`) targets Python ≤3.12 and was not installable in
+the build environment (this box only has 3.14, and the package did not resolve
+from the registry here). Run the check on your machine:
+
+```bash
+py -3.12 -m venv .venv
+.venv\Scripts\python -m pip install -e ".[dev,tinkoff]"
+# .env:  BROKER_API_KEY=t.<your sandbox token>   BROKER_NAME=tinkoff
+.venv\Scripts\python scripts/tinkoff_sandbox_check.py
+```
+
+`scripts/tinkoff_sandbox_check.py` connects to the sandbox, opens/uses a sandbox
+account, funds it with virtual money, then lists instruments + quotes and
+positions — read-only validation, no real orders. The token is read from `.env`
+only (never the CLI, never logged). If the SDK API differs from the assumed
+field/method names, adjust `app/brokers/tinkoff/` (the unit tests pin the
+contract) and re-run.
+
 ## Rules every adapter must follow
 - **Never** assume option and futures lot sizes/multipliers are equal — always
   read them from `ContractSpec`.
