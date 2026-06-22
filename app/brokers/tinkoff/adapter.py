@@ -8,8 +8,13 @@ NOT exercised in CI: every networked method needs a token + network. Validate
 the SDK call signatures and instrument field names against your installed
 version before pointing at sandbox. Safety guards (ADR-0003): a non-sandbox
 endpoint is refused in development/test, and order methods require all
-live-trading gates unless on sandbox. Streaming, fills and trading-schedule
-endpoints are left explicitly unimplemented (clear errors) until validated.
+live-trading gates unless on sandbox.
+
+Verified live against the sandbox: connect, account open/fund, positions/cash,
+futures listing, order-book quotes, and **streaming** (order-book subscription).
+``option_chain`` uses ``options_by`` (the full ``options()`` dump is unreliable
+on the sandbox). Fills, margin and trading-schedule remain explicit
+``NotImplementedError`` until validated.
 """
 
 from __future__ import annotations
@@ -223,8 +228,50 @@ class TInvestBrokerAdapter(BaseBrokerAdapter):
             sequence=None,
         )
 
-    def stream_quotes(self, symbols: list[str]) -> AsyncIterator[Quote]:
-        raise NotImplementedError(_NOT_WIRED.format(what="market-data streaming"))
+    async def stream_quotes(self, symbols: list[str]) -> AsyncIterator[Quote]:
+        ti = _load_sdk()
+        stream = self._svc().create_market_data_stream()
+        stream.order_book.subscribe(
+            [ti.OrderBookInstrument(instrument_id=s, depth=1) for s in symbols]
+        )
+        requested = set(symbols)
+        async for md in stream:
+            ob = getattr(md, "orderbook", None)
+            if ob is None:
+                continue
+            # Map the update back to the id we subscribed with (figi or uid).
+            if ob.instrument_uid in requested:
+                sym = ob.instrument_uid
+            elif ob.figi in requested:
+                sym = ob.figi
+            else:
+                sym = ob.instrument_uid or ob.figi
+            yield Quote(
+                instrument_symbol=sym,
+                timestamp=self._clock.now(),
+                bid=quotation_obj_to_decimal(ob.bids[0].price) if ob.bids else None,
+                ask=quotation_obj_to_decimal(ob.asks[0].price) if ob.asks else None,
+                bid_size=Decimal(ob.bids[0].quantity) if ob.bids else None,
+                ask_size=Decimal(ob.asks[0].quantity) if ob.asks else None,
+                last=None,
+                sequence=None,
+            )
+
+    async def option_chain(self, basic_asset_uid: str) -> list[Instrument]:
+        """Option chain for one underlying via ``options_by`` (the filtered call;
+        the full ``options()`` dump is unreliable on the sandbox).
+
+        ``basic_asset_uid`` is the underlying *asset* uid — note this is NOT a
+        future's ``uid``/``position_uid`` (those raise INVALID_ARGUMENT). Linking
+        a hedging future to its option chain's asset uid, plus an
+        options-on-futures path in InstrumentResolver, is required before the
+        straddle can run on T-Invest (the resolver currently assumes an equity
+        underlying)."""
+        resp = await self._svc().instruments.options_by(basic_asset_uid=basic_asset_uid)
+        out: list[Instrument] = []
+        for opt in resp.instruments:
+            _try_map(option_to_instrument, opt, out)
+        return out
 
     # --- account ------------------------------------------------------------
     async def _positions_response(self) -> Any:
