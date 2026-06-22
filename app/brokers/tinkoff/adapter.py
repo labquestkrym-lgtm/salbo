@@ -189,15 +189,55 @@ class TInvestBrokerAdapter(BaseBrokerAdapter):
 
     # --- reference data -----------------------------------------------------
     async def list_instruments(self, underlying_symbol: str | None = None) -> list[Instrument]:
+        """Assemble the future(s) + option chain for an underlying.
+
+        For a specific ``underlying_symbol`` the option chain is resolved via
+        ``options_by`` (keyed off the matching future's basic-asset uid) — the
+        full ``options()`` dump is unreliable (empty on the sandbox). If
+        ``options_by`` yields nothing we fall back to the filtered dump so the
+        method still degrades to "futures only" rather than failing.
+
+        The resolver groups futures and options by ``underlying_symbol`` (the
+        T-Invest ``basic_asset`` ticker), which is exactly what the
+        options-on-futures straddle path consumes.
+        """
         svc = self._svc()
         out: list[Instrument] = []
+        matched_futures: list[Any] = []
         for fut in await _safe_fetch(svc.instruments.futures, "futures"):
             if underlying_symbol is None or str(fut.basic_asset) == underlying_symbol:
+                matched_futures.append(fut)
                 _try_map(future_to_instrument, fut, out)
-        for opt in await _safe_fetch(svc.instruments.options, "options"):
-            if underlying_symbol is None or str(opt.basic_asset) == underlying_symbol:
-                _try_map(option_to_instrument, opt, out)
+
+        options: list[Instrument] = []
+        if underlying_symbol is not None and matched_futures:
+            options = await self._option_chain_for_future(matched_futures[0], underlying_symbol)
+        if not options:
+            for opt in await _safe_fetch(svc.instruments.options, "options"):
+                if underlying_symbol is None or str(opt.basic_asset) == underlying_symbol:
+                    _try_map(option_to_instrument, opt, options)
+        out.extend(options)
         return out
+
+    async def _option_chain_for_future(self, fut: Any, underlying_symbol: str) -> list[Instrument]:
+        """Resolve the option chain for ``fut``'s underlying via ``options_by``.
+
+        ``options_by`` needs the basic *asset* uid — NOT the future's
+        ``uid``/``position_uid`` (those raise INVALID_ARGUMENT). VALIDATE the
+        field name and that the call returns the chain against your live
+        universe; the sandbox exposes no options, so this path is unverified on
+        the network. Degrades to an empty list on any failure (caller falls back
+        to the full dump)."""
+        asset_uid = getattr(fut, "basic_asset_uid", None) or getattr(fut, "asset_uid", None)
+        if not asset_uid:
+            logger.warning("future_missing_basic_asset_uid", underlying=underlying_symbol)
+            return []
+        try:
+            chain = await self.option_chain(str(asset_uid))
+        except Exception as exc:  # one underlying's chain unavailable must not abort
+            logger.warning("option_chain_failed", underlying=underlying_symbol, error=str(exc))
+            return []
+        return [o for o in chain if o.underlying_symbol == underlying_symbol]
 
     async def get_contract_spec(self, symbol: str) -> ContractSpec:
         for inst in await self.list_instruments():

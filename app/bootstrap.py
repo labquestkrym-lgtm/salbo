@@ -46,16 +46,33 @@ logger = get_logger(__name__)
 
 def _build_broker(settings: AppSettings, clock: Clock) -> tuple[BaseBrokerAdapter, bool]:
     """Return ``(broker, can_run_strategy)``. The second flag marks whether the
-    orchestration loop can drive this broker today (mock has a streaming feed +
-    full option universe; the T-Invest sandbox needs option-by-underlying +
-    streaming wired first, so it serves the control plane only)."""
+    orchestration loop can drive this broker.
+
+    Mock: always (streaming feed + full option universe). T-Invest: only when ALL
+    live gates pass — the sandbox exposes no options, so the straddle can only
+    run against the (live-gated) production endpoint; sandbox/dev runs serve the
+    control plane (positions/quotes) only."""
     name = settings.broker_name.lower()
     if name == "tinkoff":
         from app.brokers.tinkoff import TInvestBrokerAdapter
 
-        sandbox = not settings.is_live_trading_allowed()
-        return TInvestBrokerAdapter(settings, clock, sandbox=sandbox), False
+        live_ok = settings.is_live_trading_allowed()
+        return TInvestBrokerAdapter(settings, clock, sandbox=not live_ok), live_ok
     return MockBrokerAdapter(clock, MockMarketConfig()), True
+
+
+def _orchestrator_config(settings: AppSettings) -> OrchestratorConfig:
+    """Per-broker orchestration config. T-Invest trades FORTS-style options on
+    the future (Black-76); the strategy underlying comes from the YAML params."""
+    strategy = settings.params.strategy
+    if settings.broker_name.lower() == "tinkoff":
+        return OrchestratorConfig(
+            symbol=strategy.symbol,
+            options_on_futures=True,
+            entry_contracts=strategy.contracts,
+            hedge_to_zero=strategy.hedge_to_zero,
+        )
+    return OrchestratorConfig()
 
 
 @dataclass(slots=True)
@@ -67,6 +84,7 @@ class Application:
     control: InMemoryControlPlane
     metrics: Metrics
     orchestrator: Orchestrator
+    broker: BaseBrokerAdapter
 
 
 def build_application(
@@ -97,7 +115,13 @@ def build_application(
             channels.append(telegram)
         notifier = NotificationService(channels)
     orchestrator = Orchestrator(
-        clock, broker, risk, control, OrchestratorConfig(), metrics=metrics, notifier=notifier
+        clock,
+        broker,
+        risk,
+        control,
+        _orchestrator_config(settings),
+        metrics=metrics,
+        notifier=notifier,
     )
 
     @contextlib.asynccontextmanager
@@ -127,7 +151,12 @@ def build_application(
         settings, control=control, audit=audit, clock=clock, metrics=metrics, lifespan=lifespan
     )
     return Application(
-        settings=settings, api=api, control=control, metrics=metrics, orchestrator=orchestrator
+        settings=settings,
+        api=api,
+        control=control,
+        metrics=metrics,
+        orchestrator=orchestrator,
+        broker=broker,
     )
 
 

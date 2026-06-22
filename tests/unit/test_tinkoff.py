@@ -24,12 +24,21 @@ from app.brokers.tinkoff.conversions import (
 from app.brokers.tinkoff.instruments import future_to_instrument, option_to_instrument
 from app.config.settings import AppSettings
 from app.core.clock import SimulatedClock
-from app.core.enums import AssetClass, Environment, OptionType, OrderState, OrderType, Side
+from app.core.enums import (
+    AssetClass,
+    Environment,
+    OptionType,
+    OrderState,
+    OrderType,
+    PricingModel,
+    Side,
+)
 from app.core.exceptions import (
     BrokerError,
     InstrumentResolutionError,
     LiveTradingNotAuthorizedError,
 )
+from app.instruments import InstrumentResolver
 from app.models import OrderRequest
 
 _NOW = datetime(2026, 1, 5, 15, 0, tzinfo=UTC)
@@ -120,6 +129,89 @@ def test_unknown_option_direction_raises() -> None:
     )
     with pytest.raises(InstrumentResolutionError):
         option_to_instrument(opt)
+
+
+# --- instrument-universe assembly (fake client, no network) ----------------
+class _FakeInstruments:
+    def __init__(self, futures: list, options: list, chain: list) -> None:
+        self._futures, self._options, self._chain = futures, options, chain
+        self.seen_uid: str | None = None
+
+    async def futures(self) -> SimpleNamespace:
+        return SimpleNamespace(instruments=self._futures)
+
+    async def options(self) -> SimpleNamespace:
+        return SimpleNamespace(instruments=self._options)
+
+    async def options_by(self, basic_asset_uid: str) -> SimpleNamespace:
+        self.seen_uid = basic_asset_uid
+        return SimpleNamespace(instruments=self._chain)
+
+
+class _FakeClient:
+    def __init__(self, instruments: _FakeInstruments) -> None:
+        self.instruments = instruments
+
+
+def _fut(uid: str | None = "asset-uid-1") -> SimpleNamespace:
+    kw: dict[str, object] = {
+        "figi": "FUT-SBER-0326",
+        "basic_asset": "SBER",
+        "lot": 1,
+        "currency": "rub",
+        "min_price_increment": _q(0, 10_000_000),
+        "min_price_increment_amount": _q(12, 500_000_000),
+        "expiration_date": datetime(2026, 3, 20, tzinfo=UTC),
+    }
+    if uid is not None:
+        kw["basic_asset_uid"] = uid
+    return SimpleNamespace(**kw)
+
+
+def _opt(figi: str, direction: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        figi=figi,
+        basic_asset="SBER",
+        lot=1,
+        currency="rub",
+        min_price_increment=_q(0, 10_000_000),
+        expiration_date=datetime(2026, 3, 20, tzinfo=UTC),
+        strike_price=_q(300, 0),
+        direction=direction,
+    )
+
+
+def test_list_instruments_assembles_chain_via_options_by() -> None:
+    import asyncio
+
+    chain = [_opt("OPT-C", 2), _opt("OPT-P", 1)]
+    fake = _FakeClient(_FakeInstruments([_fut()], [], chain))
+    adapter = TInvestBrokerAdapter(AppSettings(), SimulatedClock(_NOW), sandbox=True)
+    adapter._client = fake  # type: ignore[attr-defined]
+    insts = asyncio.run(adapter.list_instruments("SBER"))
+    # Resolvable as an options-on-futures straddle (future is the spot reference).
+    resolver = InstrumentResolver(insts)
+    straddle = resolver.resolve_straddle_on_future(
+        "SBER", expiry=date(2026, 3, 20), strike=Decimal("300")
+    )
+    assert straddle.underlying.asset_class is AssetClass.FUTURE
+    assert straddle.call.pricing_model is PricingModel.BLACK_76
+    assert straddle.put.pricing_model is PricingModel.BLACK_76
+    # The chain was fetched via options_by keyed off the future's basic-asset uid.
+    assert fake.instruments.seen_uid == "asset-uid-1"
+
+
+def test_list_instruments_falls_back_to_dump_without_asset_uid() -> None:
+    import asyncio
+
+    dump = [_opt("OPT-C", 2), _opt("OPT-P", 1)]
+    fake = _FakeClient(_FakeInstruments([_fut(uid=None)], dump, []))
+    adapter = TInvestBrokerAdapter(AppSettings(), SimulatedClock(_NOW), sandbox=True)
+    adapter._client = fake  # type: ignore[attr-defined]
+    insts = asyncio.run(adapter.list_instruments("SBER"))
+    options = [i for i in insts if i.asset_class is AssetClass.OPTION]
+    assert len(options) == 2  # degraded to the filtered full dump
+    assert fake.instruments.seen_uid is None  # options_by never reached (no uid)
 
 
 # --- adapter safety guards (no SDK / network needed) -----------------------

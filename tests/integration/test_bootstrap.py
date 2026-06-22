@@ -41,6 +41,24 @@ def test_telegram_channel_absent_when_unconfigured() -> None:
     assert "telegram" not in channel_names
 
 
+def test_tinkoff_broker_drives_options_on_futures_strategy() -> None:
+    # Selecting the T-Invest broker must wire the orchestrator for the
+    # options-on-futures (Black-76) straddle, with the underlying from YAML.
+    app = build_application(
+        AppSettings(  # type: ignore[arg-type]
+            api_auth_token="t",
+            broker_name="tinkoff",
+            broker_api_key="t.dummy",
+            broker_account_id="acc",
+        )
+    )
+    assert app.broker.name == "tinkoff"
+    assert app.orchestrator._cfg.options_on_futures is True
+    assert app.orchestrator._cfg.symbol == app.settings.params.strategy.symbol
+    # In dev with live gates unmet the adapter stays on the sandbox endpoint.
+    assert app.broker._sandbox is True  # type: ignore[attr-defined]
+
+
 def test_lifespan_starts_and_stops_orchestrator_cleanly() -> None:
     # autostart launches the orchestrator as a background task; entering and
     # exiting the lifespan (TestClient context) must start and cancel it without
