@@ -50,15 +50,23 @@ async def _closes(cl: ti.AsyncClient, uid: str, days: int) -> dict:
     return out
 
 
-def _backtest(ord_px: np.ndarray, pref_px: np.ndarray) -> dict:
+def _backtest(
+    ord_px: np.ndarray,
+    pref_px: np.ndarray,
+    *,
+    window: int = _WIN,
+    entry_z: float = _ENTRY_Z,
+    exit_z: float = _EXIT_Z,
+    leg_cost: float = _LEG_COST,
+) -> dict:
     spread = np.log(ord_px) - np.log(pref_px)
     n = len(spread)
     pos = 0.0          # 0 flat, +1 long spread (long ord/short pref), -1 short spread
     equity = [0.0]     # cumulative net P&L in log-spread units
     seg_pnl = 0.0      # P&L of the currently open trade (for win-rate)
     seg_results: list[float] = []
-    for i in range(_WIN, n):
-        w = spread[i - _WIN : i]
+    for i in range(window, n):
+        w = spread[i - window : i]
         mu, sd = w.mean(), w.std()
         if sd <= 0:
             equity.append(equity[-1])
@@ -67,13 +75,13 @@ def _backtest(ord_px: np.ndarray, pref_px: np.ndarray) -> dict:
         daily = pos * (spread[i] - spread[i - 1])   # mark-to-market of the held position
         seg_pnl += daily
         cost = 0.0
-        if pos == 0.0 and abs(z) >= _ENTRY_Z:
+        if pos == 0.0 and abs(z) >= entry_z:
             pos = -float(np.sign(z))                # fade the deviation
             seg_pnl = 0.0
-            cost = 2 * _LEG_COST                    # enter both legs
-        elif pos != 0.0 and abs(z) <= _EXIT_Z:
-            cost = 2 * _LEG_COST                    # exit both legs
-            seg_results.append(seg_pnl - 4 * _LEG_COST)
+            cost = 2 * leg_cost                     # enter both legs
+        elif pos != 0.0 and abs(z) <= exit_z:
+            cost = 2 * leg_cost                     # exit both legs
+            seg_results.append(seg_pnl - 4 * leg_cost)
             pos = 0.0
         equity.append(equity[-1] + daily - cost)
     eq = np.asarray(equity)
