@@ -55,6 +55,12 @@ def configure_logging(*, level: str = "INFO", json_output: bool = True) -> None:
     """Configure structlog + stdlib logging once at startup."""
     logging.basicConfig(format="%(message)s", level=getattr(logging, level.upper(), logging.INFO))
 
+    # Quiet libraries that log request URLs at INFO — those URLs can embed
+    # secrets (e.g. httpx logs the Telegram bot-token URL). Secrets must never
+    # reach the logs.
+    for noisy in ("httpx", "httpcore", "grpc", "tinkoff"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
     processors: list[Any] = [
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
