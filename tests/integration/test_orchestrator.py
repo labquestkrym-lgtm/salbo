@@ -113,3 +113,43 @@ async def test_orchestrator_emits_notifications() -> None:
     assert "started" in events
     assert "leg_filled" in events  # straddle opened -> leg notification
     assert "hedged" in events  # delta hedged at least once
+    # The hedge notification now carries explicit trade text (symbol/side/price).
+    hedge = next(n for n in channel.sent if n.event == "hedged")
+    assert {"symbol", "side", "contracts", "price"} <= set(hedge.fields)
+
+
+async def test_orchestrator_notifies_on_position_close() -> None:
+    from app.notifications import CollectingChannel, NotificationService
+
+    clock = SimulatedClock(_NOW)
+    broker = MockBrokerAdapter(
+        clock,
+        MockMarketConfig(
+            spot0=100.0,
+            annual_vol=0.50,
+            option_iv=0.20,
+            dt_seconds=3600.0,
+            days_to_expiry=30,
+            seed=3,
+            max_stream_steps=200,
+        ),
+    )
+    control = InMemoryControlPlane(
+        AppSettings(), broker, RiskManager(RiskConfig(), KillSwitch(clock))
+    )
+    channel = CollectingChannel()
+    # A time-stop that is always satisfied (30 DTE <= 999) forces an exit right
+    # after the straddle opens.
+    orch = Orchestrator(
+        clock,
+        broker,
+        RiskManager(RiskConfig(), KillSwitch(clock)),
+        control,
+        OrchestratorConfig(max_steps=120, lookback=30, exit_min_days_to_expiry=999),
+        notifier=NotificationService([channel]),
+    )
+    await control.start(confirmation_code=None)
+    await orch.run()
+    closes = [n for n in channel.sent if n.event == "position_closed"]
+    assert closes  # at least one close notification was emitted
+    assert "SELL" in closes[0].fields["legs"]  # explicit closing trade text

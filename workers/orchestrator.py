@@ -54,6 +54,7 @@ class OrchestratorConfig:
     sigma: float = 0.20
     lookback: int = 30
     entry_contracts: int = 5
+    exit_min_days_to_expiry: int = 0
     transaction_cost_buffer: float = 0.02
     model_uncertainty_buffer: float = 0.02
     base_trigger_units: float = 20.0
@@ -96,7 +97,7 @@ class Orchestrator:
         )
         self._strategy = DeltaHedgedLongStraddleStrategy(
             entry_params=StraddleEntryParams(contracts=config.entry_contracts),
-            exit_params=StraddleExitParams(),
+            exit_params=StraddleExitParams(min_days_to_expiry=config.exit_min_days_to_expiry),
             forecast_config=ForecastConfig(
                 transaction_cost_buffer=config.transaction_cost_buffer,
                 model_uncertainty_buffer=config.model_uncertainty_buffer,
@@ -150,7 +151,7 @@ class Orchestrator:
         if self._opened:
             greeks = await self._compute_greeks(straddle, now, u_mid)
             self._publish(greeks)
-            self._run_risk(greeks)
+            await self._run_risk(greeks)
 
         tripped = self._risk.kill_switch.is_tripped
         if self._metrics is not None:
@@ -158,6 +159,8 @@ class Orchestrator:
 
         if run_state is StrategyRunState.RUNNING and not self._opened and not tripped:
             await self._maybe_enter(straddle, u_mid, step)
+        if run_state is StrategyRunState.RUNNING and self._opened and not tripped:
+            await self._maybe_exit(straddle, now, step)
         if self._opened and not tripped:
             await self._maybe_hedge(straddle, now, u_mid, step)
 
@@ -197,7 +200,7 @@ class Orchestrator:
                 cash_delta=float(g.cash_delta),
             )
 
-    def _run_risk(self, g: PortfolioGreeks) -> None:
+    async def _run_risk(self, g: PortfolioGreeks) -> None:
         state = RiskState(
             cash_delta=g.cash_delta,
             net_delta_units=g.net_delta_units,
@@ -208,7 +211,10 @@ class Orchestrator:
         before = self._risk.kill_switch.is_tripped
         self._risk.evaluate(state)
         if self._risk.kill_switch.is_tripped and not before:
-            logger.error("orchestrator_kill_switch_tripped")
+            event = self._risk.kill_switch.events[-1]
+            logger.error("orchestrator_kill_switch_tripped", trigger=event.trigger.value)
+            if self._notifier is not None:
+                await self._notifier.kill_switch(event.trigger.value, event.detail)
 
     async def _maybe_enter(self, straddle: ResolvedStraddle, u_mid: Decimal, step: int) -> None:
         if len(self._underlying_mids) < self._cfg.lookback:
@@ -243,11 +249,12 @@ class Orchestrator:
             self._opened = True
             logger.info("orchestrator_opened", step=step, strike=str(straddle.strike))
             if self._notifier is not None:
-                await self._notifier.leg_filled(
-                    straddle.call.symbol,
-                    str(self._cfg.entry_contracts),
-                    str(result.call_order.average_fill_price),
-                )
+                for order in (result.call_order, result.put_order):
+                    await self._notifier.leg_filled(
+                        order.request.instrument_symbol,
+                        str(order.filled_quantity),
+                        str(order.average_fill_price),
+                    )
 
     async def _maybe_hedge(
         self, straddle: ResolvedStraddle, now: datetime, u_mid: Decimal, step: int
@@ -264,7 +271,7 @@ class Orchestrator:
         if not decision.should_hedge:
             return
         side = Side.BUY if decision.contracts > 0 else Side.SELL
-        await self._oms.submit(
+        order = await self._oms.submit(
             OrderRequest(
                 client_order_id=f"orch-hedge-{step}",
                 instrument_symbol=straddle.future.symbol,
@@ -277,4 +284,60 @@ class Orchestrator:
         if self._metrics is not None:
             self._metrics.hedges_total.inc()
         if self._notifier is not None:
-            await self._notifier.hedged(decision.contracts, decision.reason)
+            await self._notifier.hedged(
+                straddle.future.symbol,
+                side.value,
+                decision.contracts,
+                str(order.average_fill_price),
+                decision.reason,
+            )
+
+    async def _maybe_exit(self, straddle: ResolvedStraddle, now: datetime, step: int) -> None:
+        # Time-stop exit is fully deterministic (date-based). Profit/loss stops
+        # stay gated behind exit params (None by default) and need the P&L feed,
+        # so we pass zero P&L here — it can never mis-fire a profit/loss stop.
+        decision = self._strategy.evaluate_exit(
+            now=now.date(), expiry=straddle.expiry, unrealized_pnl=Decimal(0)
+        )
+        if not decision.exit:
+            return
+        legs: list[str] = []
+        # Long both option legs -> SELL to close.
+        for leg in (straddle.call, straddle.put):
+            closed = await self._oms.submit(
+                OrderRequest(
+                    client_order_id=f"orch-exit-{step}-{leg.symbol}",
+                    instrument_symbol=leg.symbol,
+                    side=Side.SELL,
+                    quantity=Decimal(self._cfg.entry_contracts),
+                    order_type=OrderType.MARKET,
+                )
+            )
+            legs.append(f"{leg.symbol} SELL {closed.filled_quantity}@{closed.average_fill_price}")
+        # Flatten any residual hedge in the future.
+        fut_qty = await self._future_position_qty(straddle.future.symbol)
+        if fut_qty != 0:
+            fut_side = Side.SELL if fut_qty > 0 else Side.BUY
+            flat = await self._oms.submit(
+                OrderRequest(
+                    client_order_id=f"orch-exit-{step}-fut",
+                    instrument_symbol=straddle.future.symbol,
+                    side=fut_side,
+                    quantity=abs(fut_qty),
+                    order_type=OrderType.MARKET,
+                )
+            )
+            legs.append(
+                f"{straddle.future.symbol} {fut_side.value.upper()} "
+                f"{flat.filled_quantity}@{flat.average_fill_price}"
+            )
+        self._opened = False
+        logger.info("orchestrator_closed", step=step, reason=decision.reason)
+        if self._notifier is not None:
+            await self._notifier.position_closed(decision.reason, "; ".join(legs))
+
+    async def _future_position_qty(self, symbol: str) -> Decimal:
+        for position in await self._broker.get_positions():
+            if position.instrument_symbol == symbol:
+                return position.quantity
+        return Decimal(0)

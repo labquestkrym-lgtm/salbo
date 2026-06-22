@@ -119,13 +119,29 @@ class NotificationService:
             )
         )
 
-    async def hedged(self, contracts: int, reason: str) -> None:
+    async def hedged(self, symbol: str, side: str, contracts: int, price: str, reason: str) -> None:
         await self.notify(
             Notification(
                 "hedged",
                 Severity.INFO,
                 "Hedge executed",
-                {"contracts": str(contracts), "reason": reason},
+                {
+                    "symbol": symbol,
+                    "side": side,
+                    "contracts": str(contracts),
+                    "price": price,
+                    "reason": reason,
+                },
+            )
+        )
+
+    async def position_closed(self, reason: str, legs: str) -> None:
+        await self.notify(
+            Notification(
+                "position_closed",
+                Severity.INFO,
+                "Position closed",
+                {"reason": reason, "legs": legs},
             )
         )
 

@@ -33,9 +33,15 @@ class TelegramChannel:
 
     async def send(self, notification: Notification) -> None:
         # Body carries only chat_id + the already-redacted text; never the token.
-        await self._client.post(
+        response = await self._client.post(
             self._url, json={"chat_id": self._chat_id, "text": notification.render()}
         )
+        # Surface a misconfigured token / chat_id (HTTP 4xx/5xx) so the
+        # NotificationService logs it instead of silently dropping the message.
+        # Guarded with getattr so test doubles returning ``None`` still work.
+        raise_for_status = getattr(response, "raise_for_status", None)
+        if callable(raise_for_status):
+            raise_for_status()
 
     @classmethod
     def from_settings(cls, settings: Any, client: AsyncPoster) -> TelegramChannel | None:

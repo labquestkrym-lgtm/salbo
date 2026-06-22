@@ -16,6 +16,7 @@ import contextlib
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
+import httpx
 from fastapi import FastAPI
 
 from app.api.app import create_app
@@ -25,7 +26,13 @@ from app.brokers.mock import MockBrokerAdapter, MockMarketConfig
 from app.config.settings import AppSettings, load_settings
 from app.core.clock import SystemClock
 from app.core.logging import get_logger
-from app.notifications import EmailChannel, LogChannel, NotificationChannel, NotificationService
+from app.notifications import (
+    EmailChannel,
+    LogChannel,
+    NotificationChannel,
+    NotificationService,
+    TelegramChannel,
+)
 from app.observability import Metrics
 from app.risk import KillSwitch, RiskManager
 from workers import Orchestrator, OrchestratorConfig
@@ -58,13 +65,18 @@ def build_application(
     control = InMemoryControlPlane(settings, broker, risk)
     metrics = Metrics()
     audit = InMemoryAuditSink(clock=clock)
-    # Always log notifications; add email if configured. Telegram needs an HTTP
-    # client managed by the deployment, so it is injected via ``notifier``.
+    # Always log notifications; add email and Telegram when configured. Telegram
+    # needs a long-lived HTTP client whose lifecycle we own (closed in lifespan).
+    telegram_client: httpx.AsyncClient | None = None
     if notifier is None:
         channels: list[NotificationChannel] = [LogChannel()]
         email = EmailChannel.from_settings(settings)
         if email is not None:
             channels.append(email)
+        telegram_client = httpx.AsyncClient(timeout=10.0)
+        telegram = TelegramChannel.from_settings(settings, telegram_client)
+        if telegram is not None:
+            channels.append(telegram)
         notifier = NotificationService(channels)
     orchestrator = Orchestrator(
         clock, broker, risk, control, OrchestratorConfig(), metrics=metrics, notifier=notifier
@@ -83,6 +95,8 @@ def build_application(
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+            if telegram_client is not None:
+                await telegram_client.aclose()
             logger.info("application_shutdown")
 
     api = create_app(
