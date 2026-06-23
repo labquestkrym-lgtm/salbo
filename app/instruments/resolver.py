@@ -28,6 +28,16 @@ class ResolvedStraddle:
     expiry: date
 
 
+@dataclass(frozen=True, slots=True)
+class ResolvedPair:
+    """A cointegrated pair traded via the front futures of both legs. The spread
+    is ``ln(leg_a) - beta*ln(leg_b)``; both legs are futures (freely shortable)."""
+
+    leg_a: Instrument
+    leg_b: Instrument
+    beta: float
+
+
 class InstrumentResolver:
     def __init__(self, instruments: list[Instrument]) -> None:
         self._by_symbol: dict[str, Instrument] = {i.symbol: i for i in instruments}
@@ -58,6 +68,25 @@ class InstrumentResolver:
 
     def futures_for(self, underlying_symbol: str) -> list[Instrument]:
         return list(self._futures.get(underlying_symbol, []))
+
+    def front_future(self, underlying_symbol: str) -> Instrument:
+        """The nearest-expiry future for an underlying (the liquid front month)."""
+        futs = self.futures_for(underlying_symbol)
+        if not futs:
+            raise InstrumentResolutionError(f"no future for {underlying_symbol}")
+        return futs[0]  # futures lists are sorted by expiry in __init__
+
+    def resolve_pair(self, symbol_a: str, symbol_b: str, *, beta: float = 1.0) -> ResolvedPair:
+        """Resolve a tradeable cointegrated pair to the front futures of both legs.
+        Both legs must share a currency (the spread is dimensionless in logs, but a
+        currency mismatch signals a bad pairing)."""
+        leg_a = self.front_future(symbol_a)
+        leg_b = self.front_future(symbol_b)
+        if leg_a.spec.currency != leg_b.spec.currency:
+            raise InstrumentResolutionError(
+                f"currency mismatch in pair: {leg_a.spec.currency} vs {leg_b.spec.currency}"
+            )
+        return ResolvedPair(leg_a=leg_a, leg_b=leg_b, beta=beta)
 
     def nearest_future(self, underlying_symbol: str, *, on_or_after: date) -> Instrument:
         """The nearest future expiring on/after ``on_or_after`` (i.e. alive

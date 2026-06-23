@@ -80,6 +80,54 @@ def test_nearest_future_must_cover_expiry() -> None:
         resolver.nearest_future("XYZ", on_or_after=far)
 
 
+def _future(symbol: str, underlying: str, currency: str = "RUB") -> Instrument:
+    spec = ContractSpec(
+        tick_size=Decimal("0.01"),
+        tick_value=Decimal("1"),
+        lot_size=1,
+        multiplier=Decimal("1"),
+        currency=currency,
+    )
+    return Instrument(
+        symbol=symbol,
+        underlying_symbol=underlying,
+        asset_class=AssetClass.FUTURE,
+        spec=spec,
+        expiry=date(2026, 9, 18),
+    )
+
+
+def test_resolve_pair_picks_front_futures() -> None:
+    near = _future("NLMK-FUT-0926", "NLMK")
+    far = Instrument(
+        symbol="NLMK-FUT-1226",
+        underlying_symbol="NLMK",
+        asset_class=AssetClass.FUTURE,
+        spec=near.spec,
+        expiry=date(2026, 12, 18),
+    )
+    chmf = _future("CHMF-FUT-0926", "CHMF")
+    resolver = InstrumentResolver([far, near, chmf])  # unsorted on purpose
+    pair = resolver.resolve_pair("NLMK", "CHMF", beta=1.02)
+    assert pair.leg_a.symbol == "NLMK-FUT-0926"  # front month, not the far one
+    assert pair.leg_b.symbol == "CHMF-FUT-0926"
+    assert pair.beta == 1.02
+
+
+def test_resolve_pair_currency_mismatch_rejected() -> None:
+    a = _future("A-FUT", "A", currency="RUB")
+    b = _future("B-FUT", "B", currency="USD")
+    resolver = InstrumentResolver([a, b])
+    with pytest.raises(InstrumentResolutionError, match="currency"):
+        resolver.resolve_pair("A", "B")
+
+
+def test_front_future_missing_raises() -> None:
+    resolver = InstrumentResolver([_future("A-FUT", "A")])
+    with pytest.raises(InstrumentResolutionError):
+        resolver.front_future("ZZZ")
+
+
 def test_currency_mismatch_rejected() -> None:
     spec_usd = ContractSpec(
         tick_size=Decimal("0.01"),
