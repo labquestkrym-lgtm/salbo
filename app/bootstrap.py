@@ -54,16 +54,18 @@ def _build_broker(settings: AppSettings, clock: Clock) -> tuple[BaseBrokerAdapte
     """Return ``(broker, can_run_strategy)``. The second flag marks whether the
     orchestration loop can drive this broker.
 
-    Mock: always (streaming feed + full option universe). T-Invest: only when ALL
-    live gates pass — the sandbox exposes no options, so the straddle can only
-    run against the (live-gated) production endpoint; sandbox/dev runs serve the
-    control plane (positions/quotes) only."""
+    Mock: always (streaming feed + full option universe). T-Invest: the straddle
+    needs the (prod-only, live-gated) option chain, so it runs only when all live
+    gates pass. The pairs strategy needs ONLY futures — available on the sandbox —
+    so it can drive the loop in paper/sandbox too (virtual fills on real data)."""
     name = settings.broker_name.lower()
     if name == "tinkoff":
         from app.brokers.tinkoff import TInvestBrokerAdapter
 
         live_ok = settings.is_live_trading_allowed()
-        return TInvestBrokerAdapter(settings, clock, sandbox=not live_ok), live_ok
+        is_pairs = settings.params.strategy.kind.lower() == "pairs"
+        can_run = live_ok or is_pairs
+        return TInvestBrokerAdapter(settings, clock, sandbox=not live_ok), can_run
     return MockBrokerAdapter(clock, MockMarketConfig()), True
 
 

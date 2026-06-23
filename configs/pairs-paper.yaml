@@ -1,0 +1,40 @@
+# ===========================================================================
+# PAPER run of the cointegrated-pair stat-arb (NLMK/CHMF) on T-Invest.
+#
+# Paper = real market data, VIRTUAL fills (T-Invest sandbox). No real money, no
+# live gates. Use this for the first pairs run while futures-roll handling and
+# pair-specific risk limits are still pending. Point the runner at this file:
+#
+#   $env:CONFIG_PATH = "configs/pairs-paper.yaml"
+#   $env:AUTOSTART_ORCHESTRATOR = "true"
+#   .\.venv312\Scripts\python -m uvicorn app.bootstrap:asgi --factory --host 127.0.0.1 --port 8000
+#
+# Then POST /strategy/start (no confirmation code needed outside live mode).
+# ===========================================================================
+
+app:
+  environment: development   # NOT production -> live trading stays forbidden
+  mode: paper                # paper: sandbox endpoint, virtual fills
+
+strategy:
+  kind: pairs                # build the PairsOrchestrator (not the straddle)
+
+# Spread = ln(NLMK) - beta*ln(CHMF); both legs via their front FORTS futures.
+# Validated: ADF -3.7..-4.7, beta ~1.02, half-life ~11d (scripts/cointegration_check.py).
+pairs:
+  symbol_a: NLMK
+  symbol_b: CHMF
+  beta: 1.02
+  window: 60
+  entry_z: 2.0
+  exit_z: 0.5
+  target_notional_per_leg: 5000   # gross per leg; integer futures, capped below
+  max_contracts_per_leg: 3
+
+# Pair risk is gated in the orchestrator (kill switch + contract cap). These
+# greeks limits are unused by the pairs loop but kept non-zero for completeness.
+risk:
+  maximum_daily_loss: 2500
+  maximum_drawdown: 5000
+  maximum_margin_utilization: 0.50
+  kill_switch_policy: hold
