@@ -40,7 +40,12 @@ from app.notifications import (
 )
 from app.observability import Metrics
 from app.risk import KillSwitch, RiskManager
-from workers import Orchestrator, OrchestratorConfig
+from workers import (
+    Orchestrator,
+    OrchestratorConfig,
+    PairsOrchestrator,
+    PairsOrchestratorConfig,
+)
 
 logger = get_logger(__name__)
 
@@ -78,6 +83,20 @@ def _orchestrator_config(settings: AppSettings) -> OrchestratorConfig:
     return OrchestratorConfig()
 
 
+def _pairs_config(settings: AppSettings) -> PairsOrchestratorConfig:
+    p = settings.params.pairs
+    return PairsOrchestratorConfig(
+        symbol_a=p.symbol_a,
+        symbol_b=p.symbol_b,
+        beta=p.beta,
+        window=p.window,
+        entry_z=p.entry_z,
+        exit_z=p.exit_z,
+        target_notional_per_leg=p.target_notional_per_leg,
+        max_contracts_per_leg=p.max_contracts_per_leg,
+    )
+
+
 @dataclass(slots=True)
 class Application:
     """Bundle of wired components (handy for tests and the ASGI factory)."""
@@ -86,7 +105,7 @@ class Application:
     api: FastAPI
     control: InMemoryControlPlane
     metrics: Metrics
-    orchestrator: Orchestrator
+    orchestrator: Orchestrator | PairsOrchestrator
     broker: BaseBrokerAdapter
 
 
@@ -117,15 +136,17 @@ def build_application(
         if telegram is not None:
             channels.append(telegram)
         notifier = NotificationService(channels)
-    orchestrator = Orchestrator(
-        clock,
-        broker,
-        risk,
-        control,
-        _orchestrator_config(settings),
-        metrics=metrics,
-        notifier=notifier,
-    )
+    orchestrator: Orchestrator | PairsOrchestrator
+    if settings.params.strategy.kind.lower() == "pairs":
+        orchestrator = PairsOrchestrator(
+            clock, broker, risk, control, _pairs_config(settings),
+            metrics=metrics, notifier=notifier,
+        )
+    else:
+        orchestrator = Orchestrator(
+            clock, broker, risk, control, _orchestrator_config(settings),
+            metrics=metrics, notifier=notifier,
+        )
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:

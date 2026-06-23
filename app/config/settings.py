@@ -27,6 +27,7 @@ from app.core.exceptions import ConfigurationError, LiveTradingNotAuthorizedErro
 # Parameter blocks (loaded from YAML)
 # ---------------------------------------------------------------------------
 class StrategyConfig(BaseModel):
+    kind: str = "straddle"  # "straddle" (options) | "pairs" (cointegrated futures)
     symbol: str = "PLACEHOLDER"
     option_structure: str = "straddle"
     contracts: int = Field(default=1, ge=1)
@@ -131,11 +132,32 @@ class TradingConfig(BaseModel):
     symbol: str = "PLACEHOLDER"
 
 
+class PairsConfig(BaseModel):
+    """Cointegrated-pair stat-arb parameters (used when strategy.kind == 'pairs').
+    Spread = ln(symbol_a) - beta*ln(symbol_b); both legs traded via front futures."""
+
+    symbol_a: str = "PLACEHOLDER"
+    symbol_b: str = "PLACEHOLDER"
+    beta: float = Field(default=1.0, gt=0)
+    window: int = Field(default=60, ge=2)
+    entry_z: float = Field(default=2.0, gt=0)
+    exit_z: float = Field(default=0.5, ge=0)
+    target_notional_per_leg: Decimal = Field(default=Decimal("5000"), gt=0)
+    max_contracts_per_leg: int = Field(default=5, ge=1)
+
+    @model_validator(mode="after")
+    def _check_bands(self) -> PairsConfig:
+        if self.entry_z <= self.exit_z:
+            raise ValueError("entry_z must exceed exit_z")
+        return self
+
+
 class ParametersFile(BaseModel):
     """Full validated contents of a configs/*.yaml file."""
 
     trading: TradingConfig = Field(default_factory=TradingConfig)
     strategy: StrategyConfig = Field(default_factory=StrategyConfig)
+    pairs: PairsConfig = Field(default_factory=PairsConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
 

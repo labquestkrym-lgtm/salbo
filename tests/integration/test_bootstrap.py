@@ -44,6 +44,34 @@ def test_telegram_channel_absent_when_unconfigured() -> None:
     assert "telegram" not in channel_names
 
 
+def test_pairs_strategy_kind_builds_pairs_orchestrator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from workers import PairsOrchestrator
+
+    cfg = tmp_path / "pairs.yaml"
+    cfg.write_text(
+        "app:\n  environment: development\n  mode: paper\n"
+        "strategy:\n  kind: pairs\n"
+        "pairs:\n  symbol_a: NLMK\n  symbol_b: CHMF\n  beta: 1.02\n  entry_z: 2.0\n  exit_z: 0.5\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CONFIG_PATH", str(cfg))
+    monkeypatch.setenv("API_AUTH_TOKEN", "tok")
+    app = asgi()  # builds via CONFIG_PATH
+    # The factory returns the API; rebuild explicitly to inspect the orchestrator.
+    from app.bootstrap import build_application
+    from app.config.settings import load_settings
+
+    built = build_application(load_settings(str(cfg)))
+    assert isinstance(built.orchestrator, PairsOrchestrator)
+    assert built.orchestrator._cfg.symbol_a == "NLMK"
+    assert built.orchestrator._cfg.symbol_b == "CHMF"
+    assert built.orchestrator._cfg.beta == 1.02
+    with TestClient(app) as client:
+        assert client.get("/health").status_code == 200
+
+
 def test_tinkoff_broker_drives_options_on_futures_strategy() -> None:
     # Selecting the T-Invest broker must wire the orchestrator for the
     # options-on-futures (Black-76) straddle, with the underlying from YAML.

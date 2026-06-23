@@ -14,6 +14,7 @@ trading:
   symbol: PLACEHOLDER
 
 strategy:
+  kind: straddle          # straddle (options) | pairs (cointegrated futures stat-arb)
   symbol: PLACEHOLDER
   option_structure: straddle
   contracts: 1
@@ -31,6 +32,19 @@ strategy:
   permitted_expirations: []
   blackout_dates: []
   permitted_open_hours_utc: []
+
+# Used only when strategy.kind == pairs. Spread = ln(symbol_a) - beta*ln(symbol_b);
+# both legs traded via their front FORTS futures (freely shortable). Validated
+# candidate: NLMK/CHMF (beta ~1.02). See scripts/cointegration_check.py.
+pairs:
+  symbol_a: PLACEHOLDER
+  symbol_b: PLACEHOLDER
+  beta: 1.0
+  window: 60
+  entry_z: 2.0
+  exit_z: 0.5
+  target_notional_per_leg: 5000
+  max_contracts_per_leg: 5
 
 risk:
   maximum_daily_loss: 0
