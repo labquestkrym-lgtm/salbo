@@ -3,6 +3,13 @@
 from app.strategies.atm import StrikeCandidate, select_atm_strike
 from app.strategies.base import BaseStrategy, EntryDecision, ExitDecision
 from app.strategies.long_straddle import DeltaHedgedLongStraddleStrategy
+from app.strategies.pairs import (
+    PairAction,
+    PairSignal,
+    PairsParams,
+    PairsSpreadStrategy,
+    spread_value,
+)
 from app.strategies.vol_forecast import (
     ForecastConfig,
     RealizedVolForecastModel,
@@ -16,9 +23,14 @@ __all__ = [
     "EntryDecision",
     "ExitDecision",
     "ForecastConfig",
+    "PairAction",
+    "PairSignal",
+    "PairsParams",
+    "PairsSpreadStrategy",
     "RealizedVolForecastModel",
     "StrikeCandidate",
     "VolatilityForecast",
     "VolatilityForecastModel",
     "select_atm_strike",
+    "spread_value",
 ]
