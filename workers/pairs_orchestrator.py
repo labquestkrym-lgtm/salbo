@@ -112,7 +112,10 @@ class PairsOrchestrator:
             if len(seen) < len(symbols):
                 continue
             seen.clear()
-            await self._tick(pair, step)
+            try:
+                await self._tick(pair, step)
+            except Exception as exc:  # a bad tick/order must not kill the loop
+                logger.warning("pairs_tick_failed", step=step, error=str(exc))
             step += 1
             if step >= c.max_steps:
                 break

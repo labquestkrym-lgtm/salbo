@@ -21,6 +21,8 @@ live-only); the trading-schedule remains a static placeholder until validated.
 
 from __future__ import annotations
 
+import asyncio
+import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime, time, timedelta
 from decimal import Decimal
@@ -63,6 +65,14 @@ _ORDER_TYPE_LIMIT = 1
 _ORDER_TYPE_MARKET = 2
 _ID_TYPE_POSITION_UID = 4  # InstrumentIdType.INSTRUMENT_ID_TYPE_POSITION_UID (protobuf accepts int)
 _FILLS_LOOKBACK_DAYS = 1  # how far back get_fills scans operations (no int cursor in T-Invest)
+# T-Invest requires the order_id idempotency key to be empty or a UUID; our domain
+# client_order_id is a human-readable string, so map it to a DETERMINISTIC uuid5
+# (same client id -> same uuid -> still idempotent broker-side).
+_ORDER_ID_NS = uuid.UUID("6f9b8c1e-0000-5000-a000-5a1b0707b07a")
+
+
+def _sdk_order_id(client_order_id: str) -> str:
+    return str(uuid.uuid5(_ORDER_ID_NS, client_order_id))
 
 
 def _order_from_state(state: Any, now: datetime, *, client_order_id: str | None = None) -> Order:
@@ -343,33 +353,47 @@ class TInvestBrokerAdapter(BaseBrokerAdapter):
         )
 
     async def stream_quotes(self, symbols: list[str]) -> AsyncIterator[Quote]:
+        """Order-book stream, resilient to drops. gRPC market-data streams get torn
+        down periodically (RST_STREAM / "Stream removed"); on any stream error or a
+        clean end we re-create + re-subscribe with capped backoff so the strategy
+        loop keeps receiving quotes. Cancellation (GeneratorExit/CancelledError) is
+        BaseException, not Exception, so it still propagates and stops the stream."""
         ti = _load_sdk()
-        stream = self._svc().create_market_data_stream()
-        stream.order_book.subscribe(
-            [ti.OrderBookInstrument(instrument_id=s, depth=1) for s in symbols]
-        )
         requested = set(symbols)
-        async for md in stream:
-            ob = getattr(md, "orderbook", None)
-            if ob is None:
-                continue
-            # Map the update back to the id we subscribed with (figi or uid).
-            if ob.instrument_uid in requested:
-                sym = ob.instrument_uid
-            elif ob.figi in requested:
-                sym = ob.figi
-            else:
-                sym = ob.instrument_uid or ob.figi
-            yield Quote(
-                instrument_symbol=sym,
-                timestamp=self._clock.now(),
-                bid=quotation_obj_to_decimal(ob.bids[0].price) if ob.bids else None,
-                ask=quotation_obj_to_decimal(ob.asks[0].price) if ob.asks else None,
-                bid_size=Decimal(ob.bids[0].quantity) if ob.bids else None,
-                ask_size=Decimal(ob.asks[0].quantity) if ob.asks else None,
-                last=None,
-                sequence=None,
-            )
+        backoff = 1.0
+        while True:
+            try:
+                stream = self._svc().create_market_data_stream()
+                stream.order_book.subscribe(
+                    [ti.OrderBookInstrument(instrument_id=s, depth=1) for s in symbols]
+                )
+                async for md in stream:
+                    ob = getattr(md, "orderbook", None)
+                    if ob is None:
+                        continue
+                    backoff = 1.0  # a healthy update resets the backoff
+                    # Map the update back to the id we subscribed with (figi or uid).
+                    if ob.instrument_uid in requested:
+                        sym = ob.instrument_uid
+                    elif ob.figi in requested:
+                        sym = ob.figi
+                    else:
+                        sym = ob.instrument_uid or ob.figi
+                    yield Quote(
+                        instrument_symbol=sym,
+                        timestamp=self._clock.now(),
+                        bid=quotation_obj_to_decimal(ob.bids[0].price) if ob.bids else None,
+                        ask=quotation_obj_to_decimal(ob.asks[0].price) if ob.asks else None,
+                        bid_size=Decimal(ob.bids[0].quantity) if ob.bids else None,
+                        ask_size=Decimal(ob.asks[0].quantity) if ob.asks else None,
+                        last=None,
+                        sequence=None,
+                    )
+                logger.warning("market_data_stream_ended", symbols=len(symbols))
+            except Exception as exc:  # stream dropped -> reconnect with backoff
+                logger.warning("market_data_stream_reconnect", error=str(exc), backoff=backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2.0, 30.0)
 
     async def option_chain(
         self, basic_asset_uid: str, *, contract_size: Decimal | None = None
@@ -449,7 +473,7 @@ class TInvestBrokerAdapter(BaseBrokerAdapter):
             "direction": ti.OrderDirection(side_to_direction(request.side)),
             "account_id": self._account_id,
             "order_type": ti.OrderType(_ORDER_TYPE_MARKET if is_market else _ORDER_TYPE_LIMIT),
-            "order_id": request.client_order_id,  # idempotency key
+            "order_id": _sdk_order_id(request.client_order_id),  # idempotency key (UUID)
         }
         if not is_market and request.limit_price is not None:
             units, nano = decimal_to_quotation(request.limit_price)
@@ -473,13 +497,13 @@ class TInvestBrokerAdapter(BaseBrokerAdapter):
         self._require_can_trade_live()
         svc = self._svc()
         cancel = svc.sandbox.cancel_sandbox_order if self._sandbox else svc.orders.cancel_order
-        await cancel(account_id=self._account_id, order_id=client_order_id)
+        await cancel(account_id=self._account_id, order_id=_sdk_order_id(client_order_id))
         return await self.get_order(client_order_id)
 
     async def get_order(self, client_order_id: str) -> Order:
         svc = self._svc()
         state = svc.sandbox.get_sandbox_order_state if self._sandbox else svc.orders.get_order_state
-        st = await state(account_id=self._account_id, order_id=client_order_id)
+        st = await state(account_id=self._account_id, order_id=_sdk_order_id(client_order_id))
         return _order_from_state(st, self._clock.now(), client_order_id=client_order_id)
 
     async def get_open_orders(self) -> list[Order]:
