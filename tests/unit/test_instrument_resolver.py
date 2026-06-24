@@ -114,6 +114,26 @@ def test_resolve_pair_picks_front_futures() -> None:
     assert pair.beta == 1.02
 
 
+def test_resolve_pair_on_or_after_rolls_past_near_expiry() -> None:
+    # With on_or_after set (the roll cutoff), the near-expiry front is skipped for
+    # the next contract — this is how the orchestrator rolls before expiry.
+    near_a = _future("NLMK-0926", "NLMK")  # expiry 2026-09-18
+    far_a = Instrument(
+        symbol="NLMK-1226", underlying_symbol="NLMK", asset_class=AssetClass.FUTURE,
+        spec=near_a.spec, expiry=date(2026, 12, 18),
+    )
+    near_b = _future("CHMF-0926", "CHMF")
+    far_b = Instrument(
+        symbol="CHMF-1226", underlying_symbol="CHMF", asset_class=AssetClass.FUTURE,
+        spec=near_b.spec, expiry=date(2026, 12, 18),
+    )
+    resolver = InstrumentResolver([near_a, far_a, near_b, far_b])
+    # cutoff after the September expiry -> must pick the December contracts.
+    pair = resolver.resolve_pair("NLMK", "CHMF", on_or_after=date(2026, 9, 19))
+    assert pair.leg_a.symbol == "NLMK-1226"
+    assert pair.leg_b.symbol == "CHMF-1226"
+
+
 def test_resolve_pair_currency_mismatch_rejected() -> None:
     a = _future("A-FUT", "A", currency="RUB")
     b = _future("B-FUT", "B", currency="USD")

@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -394,6 +394,23 @@ class TInvestBrokerAdapter(BaseBrokerAdapter):
                 logger.warning("market_data_stream_reconnect", error=str(exc), backoff=backoff)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2.0, 30.0)
+
+    async def get_daily_closes(self, symbol: str, *, days: int) -> list[tuple[date, float]]:
+        """Daily closes (oldest first) via ``get_all_candles`` — used to seed the
+        pair spread so the z-score starts on the validated daily timescale."""
+        ti = _load_sdk()
+        now = self._clock.now()
+        out: list[tuple[date, float]] = []
+        try:
+            async for c in self._svc().get_all_candles(
+                instrument_id=symbol,
+                from_=now - timedelta(days=days),
+                interval=ti.CandleInterval.CANDLE_INTERVAL_DAY,
+            ):
+                out.append((c.time.date(), float(quotation_obj_to_decimal(c.close))))
+        except Exception as exc:  # history unavailable -> caller falls back
+            logger.warning("daily_closes_failed", symbol=symbol, error=str(exc))
+        return out
 
     async def option_chain(
         self, basic_asset_uid: str, *, contract_size: Decimal | None = None

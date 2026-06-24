@@ -76,12 +76,19 @@ class InstrumentResolver:
             raise InstrumentResolutionError(f"no future for {underlying_symbol}")
         return futs[0]  # futures lists are sorted by expiry in __init__
 
-    def resolve_pair(self, symbol_a: str, symbol_b: str, *, beta: float = 1.0) -> ResolvedPair:
+    def resolve_pair(
+        self, symbol_a: str, symbol_b: str, *, beta: float = 1.0, on_or_after: date | None = None
+    ) -> ResolvedPair:
         """Resolve a tradeable cointegrated pair to the front futures of both legs.
-        Both legs must share a currency (the spread is dimensionless in logs, but a
-        currency mismatch signals a bad pairing)."""
-        leg_a = self.front_future(symbol_a)
-        leg_b = self.front_future(symbol_b)
+        With ``on_or_after`` the nearest future expiring on/after that date is used
+        (skip a front contract near expiry to roll into the next one). Both legs
+        must share a currency (a mismatch signals a bad pairing)."""
+        if on_or_after is None:
+            leg_a = self.front_future(symbol_a)
+            leg_b = self.front_future(symbol_b)
+        else:
+            leg_a = self.nearest_future(symbol_a, on_or_after=on_or_after)
+            leg_b = self.nearest_future(symbol_b, on_or_after=on_or_after)
         if leg_a.spec.currency != leg_b.spec.currency:
             raise InstrumentResolutionError(
                 f"currency mismatch in pair: {leg_a.spec.currency} vs {leg_b.spec.currency}"

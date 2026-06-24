@@ -144,6 +144,8 @@ class PairsConfig(BaseModel):
     exit_z: float = Field(default=0.5, ge=0)
     target_notional_per_leg: Decimal = Field(default=Decimal("5000"), gt=0)
     max_contracts_per_leg: int = Field(default=5, ge=1)
+    roll_buffer_days: int = Field(default=3, ge=0)
+    max_pair_loss: Decimal = Field(default=Decimal("0"), ge=0)  # 0 = disabled
 
     @model_validator(mode="after")
     def _check_bands(self) -> PairsConfig:

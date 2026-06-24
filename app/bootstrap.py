@@ -96,6 +96,8 @@ def _pairs_config(settings: AppSettings) -> PairsOrchestratorConfig:
         exit_z=p.exit_z,
         target_notional_per_leg=p.target_notional_per_leg,
         max_contracts_per_leg=p.max_contracts_per_leg,
+        roll_buffer_days=p.roll_buffer_days,
+        max_pair_loss=p.max_pair_loss,
     )
 
 

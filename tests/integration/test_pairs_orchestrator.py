@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from app.api.control import InMemoryControlPlane
@@ -11,7 +11,8 @@ from app.brokers.mock import MockBrokerAdapter, MockMarketConfig
 from app.config.settings import AppSettings, RiskConfig
 from app.core.clock import SimulatedClock
 from app.core.enums import AssetClass
-from app.models import ContractSpec, Instrument
+from app.instruments.resolver import ResolvedPair
+from app.models import ContractSpec, Instrument, Position
 from app.notifications import CollectingChannel, NotificationService
 from app.risk import KillSwitch, RiskManager
 from workers import PairsOrchestrator, PairsOrchestratorConfig
@@ -100,6 +101,83 @@ async def test_pairs_orchestrator_opens_and_closes_on_reversion() -> None:
     assert "leg_filled" in events  # two-leg futures orders were sent
     # A round trip should have produced at least one close notification.
     assert any(n.event == "position_closed" for n in channel.sent)
+
+
+def _pair(orch: PairsOrchestrator) -> ResolvedPair:
+    b = orch._broker
+    return ResolvedPair(leg_a=b._instruments["AAA-FUT"], leg_b=b._instruments["BBB-FUT"], beta=1.0)
+
+
+async def test_seed_daily_spreads_uses_daily_window() -> None:
+    orch, _control, _channel = _setup()  # window=20
+    pair = _pair(orch)
+
+    async def fake_closes(symbol: str, *, days: int) -> list[tuple[date, float]]:
+        base = date(2026, 1, 1)
+        if symbol == "AAA-FUT":
+            return [(base + timedelta(days=i), 100.0 + (1.0 if i % 2 else -1.0)) for i in range(80)]
+        return [(base + timedelta(days=i), 100.0) for i in range(80)]
+
+    orch._broker.get_daily_closes = fake_closes  # type: ignore[method-assign]
+    await orch._seed_daily_spreads(pair)
+    assert len(orch._daily_spreads) >= orch._cfg.window  # seeded the window
+    series = orch._decision_series(0.05)
+    assert series[-1] == 0.05  # today's live spread is appended to the daily history
+    assert len(series) == len(orch._daily_spreads) + 1
+
+
+def test_decision_series_falls_back_to_ticks_without_seed() -> None:
+    orch, _control, _channel = _setup()  # no daily seed
+    assert orch._decision_series(0.1) == [0.1]
+    assert orch._decision_series(0.2) == [0.1, 0.2]  # tick-accumulated fallback
+
+
+async def test_reconcile_resumes_existing_spread() -> None:
+    orch, _control, _channel = _setup()
+    pair = _pair(orch)
+
+    async def fake_positions() -> list[Position]:
+        return [
+            Position(instrument_symbol="AAA-FUT", quantity=Decimal("2")),
+            Position(instrument_symbol="BBB-FUT", quantity=Decimal("-2")),
+        ]
+
+    orch._broker.get_positions = fake_positions  # type: ignore[method-assign]
+    await orch._reconcile(pair)
+    assert orch._opened is True
+    assert orch._direction == 1  # long A / short B
+    assert orch._contracts_a == 2 and orch._contracts_b == 2
+
+
+async def test_reconcile_flattens_orphan_leg() -> None:
+    orch, _control, _channel = _setup()
+    pair = _pair(orch)
+    await orch._broker.connect()
+
+    async def fake_positions() -> list[Position]:
+        return [Position(instrument_symbol="AAA-FUT", quantity=Decimal("1"))]
+
+    orch._broker.get_positions = fake_positions  # type: ignore[method-assign]
+    await orch._reconcile(pair)
+    assert orch._opened is False  # a lone leg is flattened, not adopted as a pair
+
+
+def test_pair_pnl_mark_to_market() -> None:
+    orch, _control, _channel = _setup()
+    pair = _pair(orch)
+    # Long spread (long A / short B), 1 lot each, entered at 100/100.
+    orch._opened = True
+    orch._direction = 1
+    orch._contracts_a = orch._contracts_b = 1
+    orch._entry_mid_a = orch._entry_mid_b = Decimal("100")
+    # A rises to 101, B flat -> long-A leg gains 1 (mult 1).
+    assert orch._pair_pnl(pair, Decimal("101"), Decimal("100")) == Decimal("1")
+    # Same move while SHORT the spread -> loses 1.
+    orch._direction = -1
+    assert orch._pair_pnl(pair, Decimal("101"), Decimal("100")) == Decimal("-1")
+    # Flat -> zero regardless of marks.
+    orch._opened = False
+    assert orch._pair_pnl(pair, Decimal("150"), Decimal("90")) == Decimal("0")
 
 
 async def test_pairs_orchestrator_stopped_does_not_trade() -> None:

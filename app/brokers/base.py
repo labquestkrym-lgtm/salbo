@@ -14,6 +14,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import date
 
 from app.models import (
     CashBalance,
@@ -112,3 +113,9 @@ class BaseBrokerAdapter(ABC):
     async def modify_order(self, client_order_id: str, *, limit_price: object) -> Order:
         """Optional: amend price/qty if the broker supports it."""
         raise NotImplementedError(f"{self.name} does not support order modification")
+
+    async def get_daily_closes(self, symbol: str, *, days: int) -> list[tuple[date, float]]:
+        """Daily (date, close) history for an instrument, oldest first. Used to seed
+        signals (e.g. the pair spread) so a strategy doesn't start blind. Default:
+        no history — adapters that can serve candles override this."""
+        return []
