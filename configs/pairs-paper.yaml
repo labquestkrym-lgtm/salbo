@@ -22,15 +22,20 @@ strategy:
 # Spread = ln(NLMK) - beta*ln(CHMF); both legs via their front FORTS futures.
 # Validated: ADF -3.7..-4.7, beta ~1.02, half-life ~11d (scripts/cointegration_check.py).
 pairs:
-  symbol_a: NLMK
-  symbol_b: CHMF
-  beta: 1.02
+  # Portfolio of robust cointegrated pairs from scripts/pairs_scan.py (ADF<=-3.4,
+  # both OOS halves positive). Running the basket = the validated way to raise
+  # activity. In-sample selection -> this sandbox run is the forward validation.
+  basket: [BSPB/TATN, HYDR/SNGS, BSPB/GAZP, GAZP/SNGS, GAZP/TATN, GAZP/HYDR, MTSS/NVTK, MTSS/SBER]
+  beta: 1.0
   window: 60
   entry_z: 2.0
   exit_z: 0.5
   target_notional_per_leg: 5000   # gross per leg; integer futures, capped below
   max_contracts_per_leg: 3
   max_steps: 2000000              # run through a full session (loop ends only on this)
+  # symbol_a/symbol_b are the single-pair fallback (ignored when basket is set).
+  symbol_a: NLMK
+  symbol_b: CHMF
 
 # Pair risk is gated in the orchestrator (kill switch + contract cap). These
 # greeks limits are unused by the pairs loop but kept non-zero for completeness.

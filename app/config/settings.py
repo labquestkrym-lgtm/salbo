@@ -138,6 +138,10 @@ class PairsConfig(BaseModel):
 
     symbol_a: str = "PLACEHOLDER"
     symbol_b: str = "PLACEHOLDER"
+    # Portfolio of pairs as "A/B" strings (e.g. ["GAZP/SNGS", "HYDR/SNGS"]). When
+    # non-empty the bot runs the MultiPairOrchestrator over these; else the single
+    # symbol_a/symbol_b pair. Each uses the shared beta below (1:1 cointegrated spread).
+    basket: list[str] = Field(default_factory=list)
     beta: float = Field(default=1.0, gt=0)
     window: int = Field(default=60, ge=2)
     entry_z: float = Field(default=2.0, gt=0)

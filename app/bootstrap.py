@@ -41,6 +41,8 @@ from app.notifications import (
 from app.observability import Metrics
 from app.risk import KillSwitch, RiskManager
 from workers import (
+    MultiPairOrchestrator,
+    MultiPairOrchestratorConfig,
     Orchestrator,
     OrchestratorConfig,
     PairsOrchestrator,
@@ -102,6 +104,31 @@ def _pairs_config(settings: AppSettings) -> PairsOrchestratorConfig:
     )
 
 
+def _parse_basket(basket: list[str], beta: float) -> list[tuple[str, str, float]]:
+    """Parse ["A/B", ...] pair strings into (a, b, beta) tuples."""
+    out: list[tuple[str, str, float]] = []
+    for entry in basket:
+        a, _, b = entry.partition("/")
+        if a and b:
+            out.append((a.strip(), b.strip(), beta))
+    return out
+
+
+def _multi_pairs_config(settings: AppSettings) -> MultiPairOrchestratorConfig:
+    p = settings.params.pairs
+    return MultiPairOrchestratorConfig(
+        pairs=_parse_basket(p.basket, p.beta),
+        window=p.window,
+        entry_z=p.entry_z,
+        exit_z=p.exit_z,
+        target_notional_per_leg=p.target_notional_per_leg,
+        max_contracts_per_leg=p.max_contracts_per_leg,
+        roll_buffer_days=p.roll_buffer_days,
+        max_pair_loss=p.max_pair_loss,
+        max_steps=p.max_steps,
+    )
+
+
 @dataclass(slots=True)
 class Application:
     """Bundle of wired components (handy for tests and the ASGI factory)."""
@@ -110,7 +137,7 @@ class Application:
     api: FastAPI
     control: InMemoryControlPlane
     metrics: Metrics
-    orchestrator: Orchestrator | PairsOrchestrator
+    orchestrator: Orchestrator | PairsOrchestrator | MultiPairOrchestrator
     broker: BaseBrokerAdapter
 
 
@@ -141,12 +168,18 @@ def build_application(
         if telegram is not None:
             channels.append(telegram)
         notifier = NotificationService(channels)
-    orchestrator: Orchestrator | PairsOrchestrator
+    orchestrator: Orchestrator | PairsOrchestrator | MultiPairOrchestrator
     if settings.params.strategy.kind.lower() == "pairs":
-        orchestrator = PairsOrchestrator(
-            clock, broker, risk, control, _pairs_config(settings),
-            metrics=metrics, notifier=notifier,
-        )
+        if settings.params.pairs.basket:  # a portfolio of pairs
+            orchestrator = MultiPairOrchestrator(
+                clock, broker, risk, control, _multi_pairs_config(settings),
+                metrics=metrics, notifier=notifier,
+            )
+        else:
+            orchestrator = PairsOrchestrator(
+                clock, broker, risk, control, _pairs_config(settings),
+                metrics=metrics, notifier=notifier,
+            )
     else:
         orchestrator = Orchestrator(
             clock, broker, risk, control, _orchestrator_config(settings),

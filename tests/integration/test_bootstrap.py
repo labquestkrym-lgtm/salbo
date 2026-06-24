@@ -72,6 +72,25 @@ def test_pairs_strategy_kind_builds_pairs_orchestrator(
         assert client.get("/health").status_code == 200
 
 
+def test_pairs_basket_builds_multi_pair_orchestrator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.bootstrap import build_application
+    from app.config.settings import load_settings
+    from workers import MultiPairOrchestrator
+
+    cfg = tmp_path / "basket.yaml"
+    cfg.write_text(
+        "app:\n  environment: development\n  mode: paper\n"
+        "strategy:\n  kind: pairs\n"
+        "pairs:\n  basket: [GAZP/SNGS, HYDR/SNGS]\n  beta: 1.0\n",
+        encoding="utf-8",
+    )
+    built = build_application(load_settings(str(cfg)))
+    assert isinstance(built.orchestrator, MultiPairOrchestrator)
+    assert [s._label for s in built.orchestrator.subs] == ["GAZP/SNGS", "HYDR/SNGS"]
+
+
 def test_tinkoff_broker_drives_options_on_futures_strategy() -> None:
     # Selecting the T-Invest broker must wire the orchestrator for the
     # options-on-futures (Black-76) straddle, with the underlying from YAML.

@@ -68,6 +68,18 @@ class InMemoryControlPlane:
     def set_greeks_snapshot(self, snapshot: dict[str, Any]) -> None:
         self._greeks_snapshot = snapshot
 
+    def set_pair_snapshot(self, label: str, payload: dict[str, Any]) -> None:
+        """Merge one pair's snapshot into a multi-pair view (used by the portfolio
+        orchestrator so concurrent pairs don't overwrite each other's analytics)."""
+        snap = self._greeks_snapshot
+        if not snap.get("available"):
+            snap = {"available": True, "pairs": {}}
+        snap.setdefault("pairs", {})[label] = payload
+        pairs = snap["pairs"]
+        snap["open_pairs"] = sum(1 for p in pairs.values() if p.get("opened"))
+        snap["total_pair_pnl"] = str(sum(float(p.get("pair_pnl", 0)) for p in pairs.values()))
+        self._greeks_snapshot = snap
+
     def set_pnl_snapshot(self, snapshot: dict[str, Any]) -> None:
         self._pnl_snapshot = snapshot
 

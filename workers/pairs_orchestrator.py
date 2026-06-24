@@ -65,8 +65,10 @@ class PairsOrchestrator:
         *,
         metrics: Metrics | None = None,
         notifier: NotificationService | None = None,
+        label: str | None = None,
     ) -> None:
         self._clock = clock
+        self._label = label  # set by the multi-pair orchestrator; routes the snapshot
         self._broker = broker
         self._risk = risk_manager
         self._control = control
@@ -236,9 +238,11 @@ class PairsOrchestrator:
 
         pnl = self._pair_pnl(pair, mid_a, mid_b)
         signal = self._strategy.decide(series, opened=self._opened)
-        self._control.set_greeks_snapshot(
-            {"available": True, "pair_z": signal.z, "opened": self._opened, "pair_pnl": str(pnl)}
-        )
+        payload = {"pair_z": signal.z, "opened": self._opened, "pair_pnl": str(pnl)}
+        if self._label is not None:
+            self._control.set_pair_snapshot(self._label, payload)
+        else:
+            self._control.set_greeks_snapshot({"available": True, **payload})
         # Don't open/close on a stale or one-sided book (a fill would be unreliable).
         if not (self._mds.is_tradeable(pair.leg_a.symbol) and self._mds.is_tradeable(pair.leg_b.symbol)):
             return
