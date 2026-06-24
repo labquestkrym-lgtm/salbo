@@ -30,6 +30,7 @@ pairs:
   exit_z: 0.5
   target_notional_per_leg: 5000   # gross per leg; integer futures, capped below
   max_contracts_per_leg: 3
+  max_steps: 2000000              # run through a full session (loop ends only on this)
 
 # Pair risk is gated in the orchestrator (kill switch + contract cap). These
 # greeks limits are unused by the pairs loop but kept non-zero for completeness.

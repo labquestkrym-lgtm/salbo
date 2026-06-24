@@ -146,6 +146,7 @@ class PairsConfig(BaseModel):
     max_contracts_per_leg: int = Field(default=5, ge=1)
     roll_buffer_days: int = Field(default=3, ge=0)
     max_pair_loss: Decimal = Field(default=Decimal("0"), ge=0)  # 0 = disabled
+    max_steps: int = Field(default=500, ge=1)  # loop iterations before the run ends
 
     @model_validator(mode="after")
     def _check_bands(self) -> PairsConfig:
