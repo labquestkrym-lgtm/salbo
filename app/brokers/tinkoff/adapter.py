@@ -166,6 +166,10 @@ class TInvestBrokerAdapter(BaseBrokerAdapter):
             )
         self._cm: Any = None
         self._client: Any = None
+        self._connect_lock = asyncio.Lock()  # idempotent connect for concurrent (multi-pair) callers
+        self._futures_lock = asyncio.Lock()
+        self._futures_cache: list[Any] = []
+        self._futures_cache_at: datetime | None = None
 
     def _require_can_trade_live(self) -> None:
         if self._sandbox:
@@ -192,16 +196,24 @@ class TInvestBrokerAdapter(BaseBrokerAdapter):
 
     # --- connection ---------------------------------------------------------
     async def connect(self) -> None:
-        ti = _load_sdk()
-        token = self._settings.broker_api_key
-        if token is None or not token.get_secret_value():
-            raise BrokerError("BROKER_API_KEY (T-Invest token) is not set")
-        target = (
-            ti.constants.INVEST_GRPC_API_SANDBOX if self._sandbox else ti.constants.INVEST_GRPC_API
-        )
-        self._cm = ti.AsyncClient(token.get_secret_value(), target=target)
-        self._client = await self._cm.__aenter__()
-        logger.info("tinkoff_connected", sandbox=self._sandbox)
+        # Idempotent: concurrent callers (the multi-pair orchestrator runs N pair
+        # loops) share ONE channel — many streams over one connection, which also
+        # avoids tripping the per-token connection limit.
+        async with self._connect_lock:
+            if self._client is not None:
+                return
+            ti = _load_sdk()
+            token = self._settings.broker_api_key
+            if token is None or not token.get_secret_value():
+                raise BrokerError("BROKER_API_KEY (T-Invest token) is not set")
+            target = (
+                ti.constants.INVEST_GRPC_API_SANDBOX
+                if self._sandbox
+                else ti.constants.INVEST_GRPC_API
+            )
+            self._cm = ti.AsyncClient(token.get_secret_value(), target=target)
+            self._client = await self._cm.__aenter__()
+            logger.info("tinkoff_connected", sandbox=self._sandbox)
 
     async def disconnect(self) -> None:
         if self._cm is not None:
@@ -322,6 +334,33 @@ class TInvestBrokerAdapter(BaseBrokerAdapter):
             return None
         asset_uid = getattr(resp.instrument, "asset_uid", None)
         return str(asset_uid) if asset_uid else None
+
+    def _futures_fresh(self) -> bool:
+        if not self._futures_cache or self._futures_cache_at is None:
+            return False
+        return (self._clock.now() - self._futures_cache_at).total_seconds() < 120
+
+    async def _cached_futures(self) -> list[Any]:
+        """All futures, cached ~120s. Concurrent callers (the multi-pair startup)
+        share ONE futures() call instead of N — staying under the instruments-service
+        rate limit (15/min)."""
+        if self._futures_fresh():
+            return self._futures_cache
+        async with self._futures_lock:
+            if self._futures_fresh():
+                return self._futures_cache
+            self._futures_cache = await _safe_fetch(self._svc().instruments.futures, "futures")
+            self._futures_cache_at = self._clock.now()
+            return self._futures_cache
+
+    async def list_futures(self, underlying_symbol: str) -> list[Instrument]:
+        """Futures only (no option chain) for an underlying, off the shared cache —
+        used by the pairs strategy, which never needs options."""
+        out: list[Instrument] = []
+        for fut in await self._cached_futures():
+            if str(fut.basic_asset) == underlying_symbol:
+                _try_map(future_to_instrument, fut, out)
+        return out
 
     async def get_contract_spec(self, symbol: str) -> ContractSpec:
         for inst in await self.list_instruments():

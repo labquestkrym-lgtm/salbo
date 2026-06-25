@@ -114,6 +114,14 @@ class BaseBrokerAdapter(ABC):
         """Optional: amend price/qty if the broker supports it."""
         raise NotImplementedError(f"{self.name} does not support order modification")
 
+    async def list_futures(self, underlying_symbol: str) -> list[Instrument]:
+        """Futures only for an underlying — cheaper than ``list_instruments`` for
+        strategies that don't need the option chain (e.g. pairs). Default filters
+        the full list; adapters override for a lighter, cached fetch."""
+        return [
+            i for i in await self.list_instruments(underlying_symbol) if i.is_future
+        ]
+
     async def get_daily_closes(self, symbol: str, *, days: int) -> list[tuple[date, float]]:
         """Daily (date, close) history for an instrument, oldest first. Used to seed
         signals (e.g. the pair spread) so a strategy doesn't start blind. Default:

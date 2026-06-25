@@ -25,7 +25,7 @@ pairs:
   # Portfolio of robust cointegrated pairs from scripts/pairs_scan.py (ADF<=-3.4,
   # both OOS halves positive). Running the basket = the validated way to raise
   # activity. In-sample selection -> this sandbox run is the forward validation.
-  basket: [BSPB/TATN, HYDR/SNGS, BSPB/GAZP, GAZP/SNGS, GAZP/TATN, GAZP/HYDR, MTSS/NVTK, MTSS/SBER]
+  basket: [BSPB/TATN, HYDR/SNGS, GAZP/SNGS, MTSS/NVTK]
   beta: 1.0
   window: 60
   entry_z: 2.0

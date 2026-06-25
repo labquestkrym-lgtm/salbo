@@ -109,8 +109,8 @@ class PairsOrchestrator:
         """Resolve to the front futures whose expiry is beyond the roll buffer, so
         the loop never trades a contract about to expire (it rolls to the next)."""
         c = self._cfg
-        instruments = await self._broker.list_instruments(c.symbol_a)
-        instruments += await self._broker.list_instruments(c.symbol_b)
+        instruments = await self._broker.list_futures(c.symbol_a)
+        instruments += await self._broker.list_futures(c.symbol_b)
         cutoff = self._clock.now().date() + timedelta(days=c.roll_buffer_days)
         return InstrumentResolver(instruments).resolve_pair(
             c.symbol_a, c.symbol_b, beta=c.beta, on_or_after=cutoff
