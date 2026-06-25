@@ -27,7 +27,7 @@ from app.execution import InMemoryOrderStore, OrderManager
 from app.instruments import InstrumentResolver
 from app.instruments.resolver import ResolvedPair
 from app.market_data import MarketDataService
-from app.models import OrderRequest
+from app.models import Instrument, OrderRequest
 from app.notifications import NotificationService
 from app.observability import Metrics
 from app.risk import RiskManager
@@ -255,27 +255,35 @@ class PairsOrchestrator:
         elif signal.action is PairAction.CLOSE:
             await self._close(pair, step, reason=signal.reason)
 
+    @staticmethod
+    def _point_value(inst: Instrument) -> Decimal:
+        """Ruble P&L per 1 point of the future's quoted price (tick_value/tick_size).
+        Use this for futures P&L/notional, NOT the delta `multiplier` (shares per
+        contract) — the future quote already carries the contract size."""
+        spec = inst.spec
+        return spec.tick_value / spec.tick_size if spec.tick_size > 0 else Decimal("1")
+
     def _pair_pnl(self, pair: ResolvedPair, mid_a: Decimal, mid_b: Decimal) -> Decimal:
         """Mark-to-market P&L from the entry mids (avoids the sandbox avg_price=0).
         Long spread (direction +1) is long A / short B; signs flip for short."""
         if not self._opened or self._entry_mid_a is None or self._entry_mid_b is None:
             return Decimal("0")
         sign_a, sign_b = Decimal(self._direction), Decimal(-self._direction)
-        pnl_a = (mid_a - self._entry_mid_a) * self._contracts_a * pair.leg_a.spec.multiplier * sign_a
-        pnl_b = (mid_b - self._entry_mid_b) * self._contracts_b * pair.leg_b.spec.multiplier * sign_b
+        pnl_a = (mid_a - self._entry_mid_a) * self._contracts_a * self._point_value(pair.leg_a) * sign_a
+        pnl_b = (mid_b - self._entry_mid_b) * self._contracts_b * self._point_value(pair.leg_b) * sign_b
         return pnl_a + pnl_b
 
-    def _size(self, mid: Decimal, multiplier: Decimal, scale: float = 1.0) -> int:
+    def _size(self, mid: Decimal, point_value: Decimal, scale: float = 1.0) -> int:
         notional = float(self._cfg.target_notional_per_leg) * scale
-        per_contract = float(mid) * float(multiplier)
+        per_contract = float(mid) * float(point_value)
         n = round(notional / per_contract) if per_contract > 0 else 0
         return max(1, min(n, self._cfg.max_contracts_per_leg))
 
     async def _open(
         self, pair: ResolvedPair, action: PairAction, mid_a: Decimal, mid_b: Decimal, step: int
     ) -> None:
-        self._contracts_a = self._size(mid_a, pair.leg_a.spec.multiplier)
-        self._contracts_b = self._size(mid_b, pair.leg_b.spec.multiplier, scale=self._cfg.beta)
+        self._contracts_a = self._size(mid_a, self._point_value(pair.leg_a))
+        self._contracts_b = self._size(mid_b, self._point_value(pair.leg_b), scale=self._cfg.beta)
         long_spread = action is PairAction.OPEN_LONG_SPREAD
         self._direction = 1 if long_spread else -1
         # long spread = long A / short B; short spread = short A / long B.

@@ -170,11 +170,11 @@ def test_pair_pnl_mark_to_market() -> None:
     orch._direction = 1
     orch._contracts_a = orch._contracts_b = 1
     orch._entry_mid_a = orch._entry_mid_b = Decimal("100")
-    # A rises to 101, B flat -> long-A leg gains 1 (mult 1).
-    assert orch._pair_pnl(pair, Decimal("101"), Decimal("100")) == Decimal("1")
-    # Same move while SHORT the spread -> loses 1.
+    # A rises by 1 point; point value = tick_value/tick_size = 1/0.01 = 100 -> +100.
+    assert orch._pair_pnl(pair, Decimal("101"), Decimal("100")) == Decimal("100")
+    # Same move while SHORT the spread -> -100.
     orch._direction = -1
-    assert orch._pair_pnl(pair, Decimal("101"), Decimal("100")) == Decimal("-1")
+    assert orch._pair_pnl(pair, Decimal("101"), Decimal("100")) == Decimal("-100")
     # Flat -> zero regardless of marks.
     orch._opened = False
     assert orch._pair_pnl(pair, Decimal("150"), Decimal("90")) == Decimal("0")
